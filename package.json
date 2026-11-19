@@ -15,7 +15,6 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@radix-ui/react-select": "^2",
     "@tauri-apps/api": "^2.12.5",
     "lucide-react": "^0.577.0",
     "react": "^19",

@@ -2,11 +2,16 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Filter } from '../components/ui/Controls';
 import { Composer, emptyDraft, type ComposeTarget } from '../features/mail/Composer';
 import { demoMessages, isInFolder, type Folder } from '../features/mail/demo-mail';
+import { turkishDemoMessages } from '../features/mail/demo-mail.tr';
 import { MailList } from '../features/mail/MailList';
 import { MessageReader } from '../features/mail/MessageReader';
-import { folderName, Sidebar } from '../features/mail/Sidebar';
+import { Sidebar } from '../features/mail/Sidebar';
+import { catalog, LocaleContext } from './i18n';
+import { LanguageSelect } from './LanguageSelect';
 import { PaneDivider } from './PaneDivider';
+import { ThemePresetSelect } from './ThemePresetSelect';
 import { ThemeSelect } from './ThemeSelect';
+import { resolveThemeId, useColorScheme } from './themes';
 import { useUiPreferences } from './ui-preferences';
 
 const hasMacTitleBar = /\bMacintosh\b/.test(navigator.userAgent) && navigator.maxTouchPoints < 2;
@@ -24,14 +29,21 @@ export function App() {
   const folderToggle = useRef<HTMLButtonElement>(null);
   const messageTrigger = useRef<HTMLButtonElement>(null);
   const readerHeading = useRef<HTMLHeadingElement>(null);
-  const { preferences, update, error, ready } = useUiPreferences();
-  const needle = query.trim().toLowerCase();
-  const messages = demoMessages.filter((message) => (
+  const { preferences, locale, update, error, ready } = useUiPreferences();
+  const themeId = resolveThemeId(preferences.themeId);
+  const colorScheme = useColorScheme(preferences.theme);
+  const labels = catalog[locale];
+  const queryText = query.trim();
+  const needle = queryText.toLocaleLowerCase(locale);
+  const messages = (locale === 'tr' ? turkishDemoMessages : demoMessages).filter((message) => (
     isInFolder(message, folder)
     && (filter === 'all' || message[filter])
-    && [message.sender, message.address, message.subject, message.preview ?? '', ...message.body].some((part) => part.toLowerCase().includes(needle))
+    && (message.address.toLowerCase().includes(queryText.toLowerCase())
+      || [message.sender, message.subject, message.preview ?? '', ...message.body].some((part) => part.toLocaleLowerCase(locale).includes(needle)))
   ));
   const selected = messages.find(({ id }) => id === selectedId) ?? messages[0];
+
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
 
   useEffect(() => {
     if (!messageTrigger.current || !window.matchMedia?.('(max-width: 46rem)').matches) return;
@@ -84,29 +96,37 @@ export function App() {
   }
 
   return (
-    <div className="workspace" data-theme={preferences.theme} data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
-      <div className="mail-shell" data-pane={mobilePane} style={{
-        '--sidebar-width': `${preferences.sidebarWidth}px`,
-        '--list-width': `${preferences.listWidth}px`,
-      } as CSSProperties}>
-        {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
-        {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
-        <Sidebar
-          folder={folder} open={showFolders} onClose={closeFolders} onSelect={chooseFolder} onCompose={() => setCompose({ mode: 'new' })}
-          appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={!ready} />}
-          divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={!ready} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
-        />
-        <MailList
-          title={folderName(folder)} messages={messages} selectedId={selected?.id}
-          search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
-          onSearch={setQuery} onFilter={setFilter} onToggleFolders={() => setShowFolders(!showFolders)}
-          onSelect={(id, trigger) => { messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader'); }}
-          divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={!ready} onResize={(listWidth, save) => update({ listWidth }, save)} />}
-        />
-        <MessageReader message={selected} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')} onReply={(mode, message) => setCompose({ mode, message })} />
+    <LocaleContext value={locale}>
+      <div className="workspace" data-theme={preferences.theme} data-theme-id={themeId} data-color-scheme={colorScheme} data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
+        <div className="mail-shell" data-pane={mobilePane} data-sidebar-collapsed={preferences.sidebarCollapsed} style={{
+          '--sidebar-width': `${preferences.sidebarWidth}px`,
+          '--list-width': `${preferences.listWidth}px`,
+        } as CSSProperties}>
+          {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
+          {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
+          <Sidebar
+            folder={folder} open={showFolders} collapsed={preferences.sidebarCollapsed} canToggle={ready}
+            onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
+            onClose={closeFolders} onSelect={chooseFolder} onCompose={() => setCompose({ mode: 'new' })}
+            appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={!ready} />}
+            controls={<>
+              <ThemePresetSelect value={themeId} onChange={(themeId) => update({ themeId })} disabled={!ready} />
+              <LanguageSelect value={preferences.language} onChange={(language) => update({ language })} disabled={!ready} />
+            </>}
+            divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={!ready} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
+          />
+          <MailList
+            title={labels.folders[folder]} messages={messages} selectedId={selected?.id}
+            search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
+            onSearch={setQuery} onFilter={setFilter} onToggleFolders={() => setShowFolders(!showFolders)}
+            onSelect={(id, trigger) => { messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader'); }}
+            divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={!ready} onResize={(listWidth, save) => update({ listWidth }, save)} />}
+          />
+          <MessageReader message={selected} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')} onReply={(mode, message) => setCompose({ mode, message })} />
+        </div>
+        {error && <p className="preference-error" role="status">{labels.preferenceErrors[error]}</p>}
+        {compose && <Composer target={compose} newDraft={newDraft} onDraftChange={setNewDraft} onClose={() => setCompose(undefined)} />}
       </div>
-      {error && <p className="preference-error" role="status">{error}</p>}
-      {compose && <Composer target={compose} newDraft={newDraft} onDraftChange={setNewDraft} onClose={() => setCompose(undefined)} />}
-    </div>
+    </LocaleContext>
   );
 }

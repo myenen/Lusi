@@ -8,17 +8,29 @@ use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Theme {
+enum Appearance {
     #[default]
     System,
     Light,
     Dark,
 }
 
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Language {
+    #[default]
+    System,
+    Tr,
+    En,
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
-    theme: Theme,
+    theme: Appearance,
+    theme_id: String,
+    language: Language,
+    sidebar_collapsed: bool,
     sidebar_width: u16,
     list_width: u16,
 }
@@ -26,7 +38,10 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            theme: Theme::System,
+            theme: Appearance::System,
+            theme_id: "default".into(),
+            language: Language::System,
+            sidebar_collapsed: false,
             sidebar_width: 222,
             list_width: 348,
         }
@@ -37,6 +52,15 @@ impl Preferences {
     fn validated(mut self) -> Self {
         self.sidebar_width = self.sidebar_width.clamp(190, 272);
         self.list_width = self.list_width.clamp(290, 444);
+        let id = self.theme_id.as_bytes();
+        if id.len() > 32
+            || !id.first().is_some_and(u8::is_ascii_lowercase)
+            || !id
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        {
+            self.theme_id = "default".into();
+        }
         self
     }
 }
@@ -85,9 +109,21 @@ fn write_preferences(path: &Path, preferences: Preferences) -> io::Result<()> {
     result
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadedPreferences {
+    preferences: Preferences,
+    system_locale: Option<String>,
+}
+
 #[tauri::command]
-pub fn load_ui_preferences(app: AppHandle) -> Result<Preferences, &'static str> {
-    read_preferences(&preferences_path(&app)?).map_err(|_| "Could not load appearance preferences.")
+pub fn load_ui_preferences(app: AppHandle) -> Result<LoadedPreferences, &'static str> {
+    let preferences =
+        read_preferences(&preferences_path(&app)?).map_err(|_| "Could not load preferences.")?;
+    Ok(LoadedPreferences {
+        preferences,
+        system_locale: sys_locale::get_locale(),
+    })
 }
 
 #[tauri::command]
@@ -107,11 +143,24 @@ mod tests {
         assert_eq!(
             preferences.validated(),
             Preferences {
-                theme: Theme::Dark,
+                theme: Appearance::Dark,
+                theme_id: "default".into(),
+                language: Language::System,
+                sidebar_collapsed: false,
                 sidebar_width: 190,
                 list_width: 444,
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replaces_invalid_theme_id_without_discarding_appearance() -> Result<(), serde_json::Error> {
+        let preferences: Preferences =
+            serde_json::from_str(r#"{"theme":"dark","themeId":"../invalid"}"#)?;
+        let preferences = preferences.validated();
+        assert_eq!(preferences.theme, Appearance::Dark);
+        assert_eq!(preferences.theme_id, "default");
         Ok(())
     }
 
@@ -122,15 +171,25 @@ mod tests {
         let path = directory.join("ui-preferences.json");
         write_preferences(&path, Preferences::default())?;
         let custom = Preferences {
-            theme: Theme::Dark,
+            theme: Appearance::Dark,
+            theme_id: "forest".into(),
+            language: Language::Tr,
+            sidebar_collapsed: true,
             sidebar_width: 244,
             list_width: 386,
         };
         write_preferences(&path, custom)?;
         let saved = read_preferences(&path)?;
         assert_eq!(
-            (saved.theme, saved.sidebar_width, saved.list_width),
-            (Theme::Dark, 244, 386)
+            (
+                saved.theme,
+                saved.theme_id.as_str(),
+                saved.language,
+                saved.sidebar_collapsed,
+                saved.sidebar_width,
+                saved.list_width
+            ),
+            (Appearance::Dark, "forest", Language::Tr, true, 244, 386)
         );
         fs::write(&path, "invalid preferences")?;
         assert_eq!(read_preferences(&path)?, Preferences::default());

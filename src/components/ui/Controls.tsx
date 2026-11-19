@@ -1,5 +1,6 @@
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { useLabels } from '../../app/i18n';
 
 type IconButtonProps = ComponentProps<'button'> & { label: string; icon: LucideIcon };
 
@@ -17,18 +18,15 @@ export function Toolbar({ label, children, className = '' }: { label: string; ch
 
 export type Filter = 'all' | 'unread' | 'starred';
 
-const filters: { id: Filter; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'unread', label: 'Unread' },
-  { id: 'starred', label: 'Starred' },
-];
+const filters: Filter[] = ['all', 'unread', 'starred'];
 
 export function SegmentedFilter({ value, onChange }: { value: Filter; onChange: (filter: Filter) => void }) {
+  const labels = useLabels();
   return (
-    <div className="segmented-filter" data-value={value} role="group" aria-label="Filter messages">
-      {filters.map(({ id, label }) => (
+    <div className="segmented-filter" data-value={value} role="group" aria-label={labels.filterMessages}>
+      {filters.map((id) => (
         <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)}>
-          {label}
+          {labels.filters[id]}
         </button>
       ))}
     </div>

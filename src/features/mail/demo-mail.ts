@@ -1,6 +1,7 @@
 export type Mailbox = 'inbox' | 'sent' | 'drafts' | 'trash' | 'archive';
 export type Label = 'work' | 'personal' | 'projects' | 'travel';
 export type Folder = Mailbox | Label | 'starred';
+type MessageId = 'field-notes' | 'trip' | 'notes' | 'welcome' | 'files' | 'books' | 'travel' | 'confirmed' | 'packing' | 'old';
 
 export interface DemoAttachment {
   name: string;
@@ -10,7 +11,7 @@ export interface DemoAttachment {
 }
 
 export interface DemoMessage {
-  id: string;
+  id: MessageId;
   sender: string;
   address: string;
   subject: string;

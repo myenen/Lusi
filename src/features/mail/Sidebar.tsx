@@ -1,78 +1,91 @@
-import { Archive, FilePenLine, FolderClosed, Inbox, PenLine, Send, Star, Trash2, X, type LucideIcon } from 'lucide-react';
+import { Archive, BriefcaseBusiness, FilePenLine, FolderKanban, Inbox, PanelLeftClose, PanelLeftOpen, PenLine, Plane, Send, Star, Trash2, UserRound, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
+import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import { demoMessages, isInFolder, type Folder } from './demo-mail';
+import { SidebarPreferences } from './SidebarPreferences';
 
-interface FolderEntry { id: Folder; label: string; icon: LucideIcon; count?: 'unread' | 'all'; }
+interface FolderEntry { id: Folder; icon: LucideIcon; count?: 'unread' | 'all'; }
 
 const mailboxes: FolderEntry[] = [
-  { id: 'inbox', label: 'Inbox', icon: Inbox, count: 'unread' },
-  { id: 'starred', label: 'Starred', icon: Star },
-  { id: 'sent', label: 'Sent', icon: Send },
-  { id: 'drafts', label: 'Drafts', icon: FilePenLine, count: 'all' },
-  { id: 'trash', label: 'Trash', icon: Trash2 },
-  { id: 'archive', label: 'Archive', icon: Archive },
+  { id: 'inbox', icon: Inbox, count: 'unread' },
+  { id: 'starred', icon: Star },
+  { id: 'sent', icon: Send },
+  { id: 'drafts', icon: FilePenLine, count: 'all' },
+  { id: 'trash', icon: Trash2 },
+  { id: 'archive', icon: Archive },
 ];
 
-const labels: FolderEntry[] = [
-  { id: 'work', label: 'Work', icon: FolderClosed, count: 'unread' },
-  { id: 'personal', label: 'Personal', icon: FolderClosed },
-  { id: 'projects', label: 'Projects', icon: FolderClosed },
-  { id: 'travel', label: 'Travel', icon: FolderClosed },
+const customFolders: FolderEntry[] = [
+  { id: 'work', icon: BriefcaseBusiness, count: 'unread' },
+  { id: 'personal', icon: UserRound },
+  { id: 'projects', icon: FolderKanban },
+  { id: 'travel', icon: Plane },
 ];
 
-export function folderName(folder: Folder) {
-  return [...mailboxes, ...labels].find(({ id }) => id === folder)?.label ?? 'Inbox';
-}
-
-function FolderLinks({ entries, selected, onSelect }: { entries: FolderEntry[]; selected: Folder; onSelect: (folder: Folder) => void }) {
-  return entries.map(({ id, label, icon: Icon, count }) => {
+function FolderLinks({ entries, selected, tooltips, onSelect }: { entries: FolderEntry[]; selected: Folder; tooltips: boolean; onSelect: (folder: Folder) => void }) {
+  const labels = useLabels();
+  return entries.map(({ id, icon: Icon, count }) => {
+    const label = labels.folders[id];
     const total = count ? demoMessages.filter((message) => isInFolder(message, id) && (count === 'all' || message.unread)).length : 0;
-    const countLabel = count === 'unread' ? 'unread' : total === 1 ? 'message' : 'messages';
+    const countLabel = count === 'unread' ? labels.unreadCount(total) : labels.messageCount(total);
 
     return (
-      <button key={id} type="button" className="folder-link" aria-current={id === selected ? 'page' : undefined} onClick={() => onSelect(id)}>
+      <button key={id} type="button" className="folder-link" title={tooltips ? label : undefined} aria-current={id === selected ? 'page' : undefined} onClick={() => onSelect(id)}>
         <Icon size={17} aria-hidden="true" />
-        <span>{label}</span>
-        {total > 0 && <span className="folder-count" aria-label={`${total} ${countLabel}`}>{total}</span>}
+        <span className="sidebar-copy">{label}</span>
+        {total > 0 && <span className="folder-count sidebar-copy" aria-label={countLabel}>{total}</span>}
       </button>
     );
   });
 }
 
-export function Sidebar({ folder, open, onClose, onSelect, onCompose, appearance, divider }: {
+export function Sidebar({ folder, open, collapsed, canToggle, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
   folder: Folder;
   open: boolean;
+  collapsed: boolean;
+  canToggle: boolean;
+  onToggle: () => void;
   onClose: () => void;
   onSelect: (folder: Folder) => void;
   onCompose: () => void;
   appearance: ReactNode;
+  controls: ReactNode;
   divider: ReactNode;
 }) {
+  const labels = useLabels();
   const close = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (open) close.current?.focus(); }, [open]);
+  const tooltips = collapsed && !open;
 
   return (
-    <aside id="sidebar" className="sidebar glass-panel" data-open={open} aria-label="Sidebar" role={open ? 'dialog' : undefined} aria-modal={open || undefined}>
+    <aside id="sidebar" className="sidebar glass-panel" data-open={open} data-collapsed={collapsed} aria-label={labels.sidebar} role={open ? 'dialog' : undefined} aria-modal={open || undefined}>
       <div className="sidebar-scroll">
         <div className="brand">
-          <span className="brand-icon" aria-hidden="true" />Lusi
-          {open && <IconButton ref={close} className="drawer-close" label="Close folders" icon={X} onClick={onClose} />}
+          <span className="brand-icon" aria-hidden="true" /><span className="sidebar-copy">Lusi</span>
+          <IconButton
+            className="sidebar-collapse"
+            label={collapsed ? labels.expandSidebar : labels.collapseSidebar}
+            icon={collapsed ? PanelLeftOpen : PanelLeftClose}
+            aria-controls="sidebar"
+            aria-expanded={!collapsed}
+            disabled={!canToggle}
+            onClick={onToggle}
+          />
+          {open && <IconButton ref={close} className="drawer-close" label={labels.closeFolders} icon={X} onClick={onClose} />}
         </div>
-        <button type="button" className="compose-button" onClick={onCompose}><PenLine size={17} aria-hidden="true" />Compose</button>
-        <nav className="mailboxes" aria-label="Mail folders">
-          <FolderLinks entries={mailboxes} selected={folder} onSelect={onSelect} />
-          <h2 className="folder-heading">Folders</h2>
-          <FolderLinks entries={labels} selected={folder} onSelect={onSelect} />
+        <button type="button" className="compose-button" title={tooltips ? labels.compose : undefined} onClick={onCompose}>
+          <PenLine size={17} aria-hidden="true" /><span className="sidebar-copy">{labels.compose}</span>
+        </button>
+        <nav className="mailboxes" aria-label={labels.mailFolders}>
+          <FolderLinks entries={mailboxes} selected={folder} tooltips={tooltips} onSelect={onSelect} />
+          <h2 className="folder-heading"><span className="sidebar-copy">{labels.folderHeading}</span></h2>
+          <FolderLinks entries={customFolders} selected={folder} tooltips={tooltips} onSelect={onSelect} />
         </nav>
       </div>
-      <div className="sidebar-bottom">
-        <div className="account">
-          <span className="account-icon" aria-hidden="true">D</span>
-          <div><strong>Demo account</strong><small>Sample mailbox</small></div>
-        </div>
-        {appearance}
-      </div>
+      <SidebarPreferences compact={tooltips} appearance={appearance}>
+        {controls}
+      </SidebarPreferences>
       {divider}
     </aside>
   );

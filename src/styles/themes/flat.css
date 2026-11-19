@@ -1,0 +1,86 @@
+@layer themes {
+  [data-theme-id="flat"] {
+    --radius-control: 5px;
+    --radius-panel: 9px;
+    --radius-action: 6px;
+    --radius-icon: 7px;
+    --radius-input: 5px;
+    --row-height: 68px;
+    --row-gap: 3px;
+    --list-header-gap: 10px;
+    --list-heading-size: 1.6rem;
+    --message-heading-size: clamp(1.45rem, 2.6vw, 2.2rem);
+
+    --workspace-background: var(--window);
+    --sidebar-background: var(--navigation);
+    --list-background: var(--navigation);
+    --filter-thumb-background: var(--selected);
+    --footer-background: var(--reading);
+    --toolbar-background: var(--control);
+    --navigation-filter: none;
+    --toolbar-filter: none;
+    --surface-shadow: none;
+    --compose-shadow: none;
+    --compose-hover-shadow: none;
+    --filter-thumb-shadow: none;
+    --selection-shadow: none;
+    --toolbar-shadow: none;
+    --dialog-shadow: none;
+
+    --motion-fast: 110ms;
+    --motion-standard: 140ms;
+    --motion-easing: ease-out;
+    --reader-animation: fade-in;
+    --composer-animation: fade-in;
+    --press-transform: none;
+    --compose-press-transform: none;
+
+    --ink: #20242c;
+    --muted: #505b6b;
+    --accent: #2e4d83;
+    --focus: #2c61ba;
+    --window: #e7ebf0;
+    --navigation: #f0f2f5;
+    --reading: #fcfcfd;
+    --control: #f7f8fa;
+    --hover: #e4e9f1;
+    --selected: #dfebfb;
+    --selected-edge: #98b3d9;
+    --edge: #d6dce5;
+    --divider: #d8dee7;
+    --floating: #f6f8fb;
+    --compose-edge: #2f5187;
+    --compose-background: #365b94;
+  }
+
+  [data-theme-id="flat"][data-color-scheme="dark"] {
+    --ink: #eff2f6;
+    --muted: #aeb8c7;
+    --accent: #b3d0fd;
+    --focus: #91bbfc;
+    --window: #171c24;
+    --navigation: #242b36;
+    --reading: #1c232d;
+    --control: #2c3542;
+    --hover: #364354;
+    --selected: #344a67;
+    --selected-edge: #58749a;
+    --edge: #3d4857;
+    --divider: #394454;
+    --floating: #2b3441;
+    --compose-edge: #5875a1;
+    --compose-background: #395986;
+  }
+}
+
+[data-theme-id="flat"] .reader-footer {
+  justify-content: flex-start;
+  padding: 9px clamp(16px, 2.3vw, 32px);
+  border-top: 1px solid var(--divider);
+}
+
+[data-theme-id="flat"] .reader-footer .toolbar {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}

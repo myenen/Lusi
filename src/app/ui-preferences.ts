@@ -1,11 +1,15 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
+import { resolveLocale, type LanguagePreference } from './i18n';
+import { defaultThemeId, type Appearance } from './themes';
 
-export type Theme = 'system' | 'light' | 'dark';
 export type Pane = 'sidebarWidth' | 'listWidth';
 
 export interface Preferences {
-  theme: Theme;
+  theme: Appearance;
+  themeId: string;
+  language: LanguagePreference;
+  sidebarCollapsed: boolean;
   sidebarWidth: number;
   listWidth: number;
 }
@@ -15,24 +19,37 @@ export const paneLimits = {
   listWidth: { min: 290, max: 444 },
 };
 
-const defaults: Preferences = { theme: 'system', sidebarWidth: 222, listWidth: 348 };
+const defaults: Preferences = { theme: 'system', themeId: defaultThemeId, language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 348 };
+
+interface LoadedPreferences { preferences: Preferences; systemLocale: string | null; }
+type PreferenceError = 'load' | 'save';
+
+function browserLocale() {
+  return navigator.languages[0] ?? navigator.language;
+}
 
 export function useUiPreferences() {
   const [preferences, setPreferences] = useState(defaults);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<PreferenceError>();
+  const [systemLocale, setSystemLocale] = useState(browserLocale);
   const [ready, setReady] = useState(!isTauri());
   const current = useRef(defaults);
   const saveQueue = useRef(Promise.resolve());
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri()) {
+      const refreshLocale = () => setSystemLocale(browserLocale());
+      window.addEventListener('languagechange', refreshLocale);
+      return () => window.removeEventListener('languagechange', refreshLocale);
+    }
     let active = true;
-    invoke<Preferences>('load_ui_preferences').then((stored) => {
+    invoke<LoadedPreferences>('load_ui_preferences').then(({ preferences: stored, systemLocale }) => {
       if (!active) return;
       current.current = stored;
       setPreferences(stored);
+      if (systemLocale) setSystemLocale(systemLocale);
     }).catch(() => {
-      if (active) setError('Appearance preferences could not be loaded.');
+      if (active) setError('load');
     }).finally(() => {
       if (active) setReady(true);
     });
@@ -48,12 +65,12 @@ export function useUiPreferences() {
     saveQueue.current = saveQueue.current.then(async () => {
       try {
         await invoke('save_ui_preferences', { preferences: next });
-        setError('');
+        setError(undefined);
       } catch {
-        setError('Appearance preferences could not be saved.');
+        setError('save');
       }
     });
   }
 
-  return { preferences, update, error, ready };
+  return { preferences, locale: resolveLocale(preferences.language, systemLocale), update, error, ready };
 }

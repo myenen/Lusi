@@ -139,6 +139,38 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Follow OS theme by default, with manual override saved locally.
 - Test both themes with real long emails, links, tables, attachments, and images.
 
+### Adding a theme
+
+Liquid Glass is the default theme in `src/styles/themes/default.css`. Flat in `src/styles/themes/flat.css` changes the palette, corner shapes, panel materials, message density, and transitions. Both themes use the separate system, light, or dark appearance setting.
+
+1. Add a stylesheet under `src/styles/themes/`. Set theme tokens in the `themes` cascade layer, scoped by `data-theme-id`. Tokens inherit from the default theme in the current appearance. Scope component layout refinements by the same ID outside the layer, as Flat does for the reply toolbar.
+2. Import the stylesheet after the default stylesheet in `src/app/themes.ts` and add its ID and English and Turkish names to `themePresets`. Use a stable ID of at most 32 characters that starts with a lowercase ASCII letter and contains lowercase ASCII letters, digits, or hyphens.
+3. Check the new theme in light, dark, and system appearance. Verify text, focus indicators, selection, compact windows, and reduced transparency and motion.
+
+For example, a theme with the ID `forest` can override these tokens.
+
+```css
+@layer themes {
+  [data-theme-id="forest"] {
+    --radius-action: 8px;
+    --navigation-filter: none;
+    --row-height: 70px;
+  }
+
+  [data-theme-id="forest"][data-color-scheme="light"] {
+    --accent: #22604d;
+    --focus: #187454;
+  }
+
+  [data-theme-id="forest"][data-color-scheme="dark"] {
+    --accent: #a3e5c9;
+    --focus: #8fddb9;
+  }
+}
+```
+
+The theme picker appears when at least two themes are registered. The desktop stores the theme ID separately from the appearance. An unavailable theme ID displays Liquid Glass in the chosen appearance.
+
 ## 8. Motion and interactions
 
 - Hover/focus: 120–180 ms; panel transitions: 180–250 ms.
@@ -152,7 +184,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 - Brand: **Lusi**.
 - Approved symbol: the abstract Lusi bird. Use the blue-violet variant in light mode and the white variant in dark mode.
-- Use the approved transparent PNGs as the source for interface and application assets. Preserve their proportions. The app icon uses the blue-violet variant.
+- Use the approved transparent PNGs as the source for interface and application assets. Preserve their proportions. The app icon places the blue-violet variant on a light rounded tile on both light and dark desktops. Preview the icon at `/src-tauri/icons/app-icon.html` in the local Vite server.
 - Export required sizes: 16, 24, 32, 64, 128, 256, 512, 1024 px as appropriate; also prepare monochrome tray icons.
 - Maintain clear space and avoid putting the icon inside another unnecessary frame.
 - Any visual reference mockup is guidance, not a pixel-perfect implementation requirement.

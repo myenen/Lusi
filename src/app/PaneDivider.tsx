@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { useLabels } from './i18n';
 import { paneLimits, type Pane } from './ui-preferences';
 
 export function PaneDivider({ pane, width, onResize, disabled }: {
@@ -7,6 +8,7 @@ export function PaneDivider({ pane, width, onResize, disabled }: {
   onResize: (width: number, persist: boolean) => void;
   disabled: boolean;
 }) {
+  const labels = useLabels();
   const drag = useRef<{ x: number; width: number; next: number; pointerId: number } | null>(null);
   const { min, max } = paneLimits[pane];
   const clamp = (value: number) => Math.min(max, Math.max(min, Math.round(value)));
@@ -16,7 +18,7 @@ export function PaneDivider({ pane, width, onResize, disabled }: {
       className="pane-divider"
       tabIndex={disabled ? -1 : 0}
       role="separator"
-      aria-label={pane === 'sidebarWidth' ? 'Resize sidebar' : 'Resize message list'}
+      aria-label={pane === 'sidebarWidth' ? labels.resizeSidebar : labels.resizeMessageList}
       aria-controls={pane === 'sidebarWidth' ? 'sidebar' : 'message-pane'}
       aria-orientation="vertical"
       aria-valuemin={min}

@@ -1,0 +1,104 @@
+@layer themes {
+  .workspace {
+    --radius-control: 12px;
+    --radius-panel: 24px;
+    --radius-action: 999px;
+    --radius-icon: 50%;
+    --radius-input: 8px;
+    --row-height: 77px;
+    --row-gap: 6px;
+    --list-header-gap: 13px;
+    --list-heading-size: 1.7rem;
+    --message-heading-size: clamp(1.52rem, 2.9vw, 2.55rem);
+
+    --workspace-background:
+      radial-gradient(ellipse at 7% 6%, var(--sheen), transparent 39%),
+      radial-gradient(ellipse at 0% 52%, var(--wash-left), transparent 56%),
+      radial-gradient(ellipse at 48% -18%, var(--wash-right), transparent 58%),
+      radial-gradient(ellipse at 63% 114%, var(--wash-right), transparent 60%),
+      var(--window);
+    --sidebar-background: linear-gradient(155deg, var(--sheen), transparent 28%), var(--navigation);
+    --list-background: linear-gradient(172deg, var(--navigation), var(--control));
+    --filter-thumb-background: linear-gradient(150deg, var(--control), transparent 65%), var(--floating);
+    --footer-background: linear-gradient(transparent, var(--control));
+    --toolbar-background: linear-gradient(150deg, var(--control), transparent 62%), var(--floating);
+    --navigation-filter: blur(22px) saturate(146%);
+    --toolbar-filter: blur(16px) saturate(140%);
+    --surface-shadow: inset 0 1px var(--sheen);
+    --compose-shadow: inset 0 1px var(--compose-sheen), 0 4px 9px var(--shadow);
+    --compose-hover-shadow: inset 0 1px var(--compose-sheen), 0 6px 13px var(--shadow);
+    --filter-thumb-shadow: inset 0 1px var(--sheen), 0 1px 5px var(--shadow);
+    --selection-shadow: inset 0 1px var(--sheen), 0 3px 9px var(--shadow);
+    --toolbar-shadow: inset 0 1px var(--sheen), 0 6px 16px var(--shadow);
+    --dialog-shadow: inset 0 1px var(--sheen), 0 20px 58px var(--shadow);
+
+    --motion-fast: 160ms;
+    --motion-standard: 220ms;
+    --motion-easing: cubic-bezier(.2, .75, .3, 1);
+    --reader-animation: rise-in;
+    --composer-animation: composer-in;
+    --press-transform: scale(.97);
+    --compose-press-transform: scale(.98);
+
+    --ink: #182236;
+    --muted: #4d5a72;
+    --accent: #283f9a;
+    --focus: #3255cd;
+    --window: #e7edf9;
+    --wash-left: #adccfa;
+    --wash-right: #d9cbf4;
+    --navigation: rgb(241 246 255 / 51%);
+    --reading: #f9faff;
+    --control: rgb(255 255 255 / 47%);
+    --hover: rgb(255 255 255 / 69%);
+    --selected: rgb(191 213 252 / 67%);
+    --selected-edge: rgb(91 133 218 / 38%);
+    --edge: rgb(255 255 255 / 79%);
+    --divider: rgb(43 61 104 / 15%);
+    --sheen: rgb(255 255 255 / 65%);
+    --compose-edge: #5267c0;
+    --compose-sheen: rgb(255 255 255 / 36%);
+    --floating: rgb(246 249 255 / 77%);
+    --shadow: rgb(43 58 109 / 15%);
+
+    --compose-background: linear-gradient(160deg, #5069d0, #384fc1 60%, #4544b0);
+    --compose-text: #fff;
+    --avatar-violet-background: #ece1ff;
+    --avatar-violet-text: #5035a5;
+    --avatar-blue-background: #d9e9ff;
+    --avatar-blue-text: #2c56a9;
+    --avatar-teal-background: #d8f0e7;
+    --avatar-teal-text: #22604d;
+    --avatar-peach-background: #ffe3d1;
+    --avatar-peach-text: #8c492b;
+    --star-edge: #875500;
+    --star-fill: #ffc85c;
+    --attachment-document-background: #fae3e8;
+    --attachment-document-text: #a72e50;
+    --attachment-image-background: #e8e2ff;
+    --attachment-image-text: #563bad;
+  }
+
+  .workspace:where([data-color-scheme="dark"]) {
+    --ink: #f1f3fa;
+    --muted: #acb5cb;
+    --accent: #c0ceff;
+    --focus: #9eb4ff;
+    --window: #141828;
+    --wash-left: #2b3d66;
+    --wash-right: #403152;
+    --navigation: rgb(24 30 49 / 62%);
+    --reading: #181e2e;
+    --control: rgb(207 221 255 / 8%);
+    --hover: rgb(200 217 255 / 13%);
+    --selected: rgb(55 78 143 / 66%);
+    --selected-edge: rgb(157 181 248 / 14%);
+    --edge: rgb(219 230 255 / 9%);
+    --divider: rgb(219 230 255 / 6%);
+    --sheen: rgb(225 235 255 / 5%);
+    --compose-edge: rgb(170 189 255 / 11%);
+    --compose-sheen: rgb(228 235 255 / 13%);
+    --floating: rgb(46 54 78 / 73%);
+    --shadow: rgb(5 8 19 / 34%);
+  }
+}
