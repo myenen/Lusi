@@ -1,6 +1,6 @@
-# Minimal Mail — AI Development Instructions
+# Luma — AI Development Instructions
 
-> Canonical instructions for AI coding agents contributing to this repository. Follow these rules unless a maintainer explicitly changes them. Project name is provisional.
+> Canonical instructions for AI coding agents contributing to this repository. Follow these rules unless a maintainer explicitly changes them.
 
 ## 1. Product mission
 
@@ -154,6 +154,8 @@ Scope may be reordered when required for correctness; never ship insecure authen
 - Prefer small, reviewable changes. Document architectural decisions in `docs/adr/` when consequential.
 
 ## 12. AI agent workflow
+
+For user-visible changes, share a working browser-based HTML preview with the maintainer before opening or packaging the Tauri app for review. Use `npm run dev -- --port 1421` from the project directory. If a flow needs native APIs, use clearly labeled sample data in the browser and explain what needs desktop verification. Continue local checks while waiting for the maintainer to review the preview. Proceed to desktop review after they have seen it and confirmed the direction.
 
 For every implementation task:
 1. Inspect the repository and identify the relevant existing code before editing.

@@ -1,5 +1,5 @@
 [package]
-name = "minimal-mail"
+name = "luma"
 version = "0.1.0"
 edition = "2021"
 description = "A desktop mail client"
@@ -8,4 +8,6 @@ description = "A desktop mail client"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = [] }

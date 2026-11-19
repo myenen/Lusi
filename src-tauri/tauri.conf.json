@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Minimal Mail",
+  "productName": "Luma",
   "version": "0.1.0",
   "identifier": "dev.minimalmail.desktop",
   "build": {
@@ -13,17 +13,23 @@
     "windows": [
       {
         "label": "main",
-        "title": "Minimal Mail",
-        "width": 1140,
-        "height": 750,
+        "title": "Luma",
+        "width": 1260,
+        "height": 820,
         "minWidth": 380,
         "minHeight": 480
       }
     ],
     "security": {
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-src 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:1420; base-uri 'none'; form-action 'none'; frame-src 'none'",
-      "capabilities": []
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-src 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420; base-uri 'none'; form-action 'none'; frame-src 'none'",
+      "capabilities": [
+        {
+          "identifier": "ui-preferences",
+          "windows": ["main"],
+          "permissions": ["allow-load-ui-preferences", "allow-save-ui-preferences"]
+        }
+      ]
     }
   },
   "bundle": {
