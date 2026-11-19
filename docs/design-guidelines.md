@@ -173,6 +173,7 @@ The theme picker appears when at least two themes are registered. The desktop st
 
 ## 8. Motion and interactions
 
+- Startup and active theme or light/dark appearance changes share one animation and timing. Visible panes reveal from top to bottom and sharpen from a light blur over 450 ms per pane. They start from left to right, 125 ms apart, so all three finish within 700 ms. Reduced motion skips the reveal.
 - Hover/focus: 120–180 ms; panel transitions: 180–250 ms.
 - Use opacity and transform when possible; avoid animating blur or large shadow radii.
 - No gratuitous bouncing or floating animation.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Filter } from '../components/ui/Controls';
 import { Composer, emptyDraft, type ComposeTarget } from '../features/mail/Composer';
 import { demoMessages, isInFolder, type Folder } from '../features/mail/demo-mail';
@@ -25,6 +25,7 @@ export function App() {
   const [showFolders, setShowFolders] = useState(false);
   const [compose, setCompose] = useState<ComposeTarget>();
   const [newDraft, setNewDraft] = useState(emptyDraft);
+  const mailShell = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const folderToggle = useRef<HTMLButtonElement>(null);
   const messageTrigger = useRef<HTMLButtonElement>(null);
@@ -42,6 +43,33 @@ export function App() {
       || [message.sender, message.subject, message.preview ?? '', ...message.body].some((part) => part.toLocaleLowerCase(locale).includes(needle)))
   ));
   const selected = messages.find(({ id }) => id === selectedId) ?? messages[0];
+
+  useLayoutEffect(() => {
+    const shell = mailShell.current;
+    const motion = window.matchMedia?.('(prefers-reduced-motion: no-preference)');
+    if (!ready || !shell?.animate || !motion?.matches) return;
+
+    const visiblePanes = Array.from(shell.querySelectorAll<HTMLElement>(':scope > :is(.sidebar, .mail-list, .reader)'))
+      .filter((pane) => pane.getClientRects().length > 0);
+    const revealMask = {
+      maskImage: 'linear-gradient(to bottom, black 45%, transparent 55%)',
+      maskRepeat: 'no-repeat',
+      maskSize: '100% 225%',
+    };
+    const animations = visiblePanes.map((pane, index) => pane.animate(
+      [
+        { ...revealMask, maskPosition: '50% 100%', filter: 'blur(6px)' },
+        { ...revealMask, maskPosition: '50% 0%', filter: 'blur(0px)' },
+      ],
+      { duration: 450, delay: index * 125, easing: 'ease-out', fill: 'backwards' },
+    ));
+    const cancel = () => animations.forEach((animation) => animation.cancel());
+    motion.addEventListener('change', cancel);
+    return () => {
+      motion.removeEventListener('change', cancel);
+      cancel();
+    };
+  }, [ready, themeId, colorScheme]);
 
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
 
@@ -98,7 +126,8 @@ export function App() {
   return (
     <LocaleContext value={locale}>
       <div className="workspace" data-theme={preferences.theme} data-theme-id={themeId} data-color-scheme={colorScheme} data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
-        <div className="mail-shell" data-pane={mobilePane} data-sidebar-collapsed={preferences.sidebarCollapsed} style={{
+        <div ref={mailShell} className="mail-shell" data-pane={mobilePane} data-sidebar-collapsed={preferences.sidebarCollapsed} style={{
+          visibility: ready ? undefined : 'hidden',
           '--sidebar-width': `${preferences.sidebarWidth}px`,
           '--list-width': `${preferences.listWidth}px`,
         } as CSSProperties}>

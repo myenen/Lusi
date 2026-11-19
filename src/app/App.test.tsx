@@ -14,6 +14,62 @@ function revealPreferences(name = 'Preferences') {
 }
 
 describe('sample mailbox', () => {
+  it.each([
+    { reducedMotion: false, panes: ['sidebar', 'mail-list', 'reader'] },
+    { reducedMotion: false, panes: ['mail-list', 'reader'] },
+    { reducedMotion: true, panes: ['sidebar', 'mail-list', 'reader'] },
+  ])('uses the same reveal at startup and for theme changes ($reducedMotion, $panes)', ({ reducedMotion, panes }) => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(prefers-reduced-motion: no-preference)' && !reducedMotion,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    const starts: [string, number, KeyframeAnimationOptions['duration']][] = [];
+    const cancel = vi.fn();
+    const animate = function (this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+      expect(keyframes.map(({ maskPosition }) => maskPosition)).toEqual(['50% 100%', '50% 0%']);
+      expect(keyframes.map(({ filter }) => filter)).toEqual(['blur(6px)', 'blur(0px)']);
+      starts.push([this.classList[0], options.delay ?? 0, options.duration]);
+      return { cancel };
+    };
+    const originalAnimate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');
+    Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: animate });
+    const visibleRects = [new DOMRect()];
+    vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (this: Element) {
+      return (panes.includes(this.classList[0]) ? visibleRects : []) as unknown as DOMRectList;
+    });
+
+    try {
+      render(<App />);
+      const startup = starts.slice();
+      expect(startup.map(([pane]) => pane)).toEqual(reducedMotion ? [] : panes);
+      startup.forEach(([, delay, duration], index) => {
+        expect(duration).toBeGreaterThan(0);
+        if (index === 0) expect(delay).toBe(0);
+        else expect(delay).toBeGreaterThan(startup[index - 1][1]);
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+      expect(starts).toEqual(startup);
+
+      const light = screen.getByRole<HTMLInputElement>('radio', { name: 'Light' });
+      fireEvent.click(light);
+      expect(light.checked).toBe(true);
+      expect(starts).toEqual(startup);
+
+      revealPreferences();
+      fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'flat' } });
+      expect(starts).toEqual([...startup, ...startup]);
+      expect(cancel).toHaveBeenCalledTimes(startup.length);
+
+      fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+      expect(starts).toEqual([...startup, ...startup, ...startup]);
+      expect(cancel).toHaveBeenCalledTimes(startup.length * 2);
+    } finally {
+      if (originalAnimate) Object.defineProperty(Element.prototype, 'animate', originalAnimate);
+      else Reflect.deleteProperty(Element.prototype, 'animate');
+    }
+  });
+
   it('selects a message and displays its plain text', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /notes from our design review/i }));
