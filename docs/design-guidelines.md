@@ -108,6 +108,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ### Message list
 - Align the heading with the sidebar brand on desktop. Use a compact top inset and leave room for macOS window controls.
+- Start the desktop message list at 380 px when space allows and keep the user's saved width after resizing.
 - Search input at top; compact `All / Unread / Starred` filters.
 - Rows show sender, subject, one-line preview, time, unread marker, and optional star.
 - Selected row: subtle tinted glass fill and crisp focus indication.
@@ -117,7 +118,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 ### Reading pane
 - Top bar: Reply, Forward, Archive, Delete, More; avoid duplicate toolbars.
 - Clear subject and sender metadata; expand recipients on demand.
-- Use the available pane width for the message layout, with responsive side padding and a readable line length for paragraphs.
+- Let the message layout follow the pane width. Use compact responsive side gutters and keep a readable line length for paragraphs.
 - Liquid Glass uses pale blue navigation and a white reading surface in light appearance. Dark appearance uses deep navy and slate surfaces, soft borders, and brighter indigo accents. Both appearances share the compact card layout.
 - Sanitized HTML email body displayed in an isolated, restricted context; never inherit application privileges.
 - External images are blocked or user-controlled by default to reduce tracking.

@@ -79,6 +79,18 @@ describe('sample mailbox', () => {
     expect(within(reader).getByText(/decisions from this morning/)).toBeTruthy();
   });
 
+  it('shows the summary for a sample message and leaves it out when unavailable', () => {
+    render(<App />);
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    expect(reader.getByText('Lusi Smart Summary').closest('details')?.open).toBe(true);
+    expect(reader.getByText(/meet at the trailhead before sunrise/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /weekend plans/i }));
+    expect(reader.getByText(/she’ll bring coffee/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /welcome to lusi/i }));
+    expect(reader.queryByText('Lusi Smart Summary')).toBeNull();
+  });
+
   it('updates the sample mailbox from row actions without opening another message', () => {
     render(<App />);
     const actions = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
@@ -281,8 +293,9 @@ describe('sample mailbox', () => {
   it('resizes the message list by keyboard within its supported bounds', () => {
     render(<App />);
     const separator = screen.getByRole('separator', { name: 'Resize message list' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('380');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('356');
+    expect(separator.getAttribute('aria-valuenow')).toBe('388');
     fireEvent.keyDown(separator, { key: 'Home' });
     fireEvent.keyDown(separator, { key: 'ArrowLeft' });
     expect(separator.getAttribute('aria-valuenow')).toBe('290');

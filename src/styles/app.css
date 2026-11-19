@@ -302,8 +302,15 @@
   .message-row-actions svg { width: 18px; height: 18px; }
 }
 
-.reader { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--reading); }
-.reader-toolbar { min-height: 68px; display: flex; align-items: center; justify-content: flex-end; padding: 10px clamp(16px, 2.3vw, 32px) 6px; }
+.reader {
+  --reader-gutter: max(clamp(14px, 1.7vw, 26px), min(6%, calc((100% - 58rem) / 2)));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--reading);
+}
+.reader-toolbar { min-height: 68px; display: flex; align-items: center; justify-content: flex-end; padding: 10px var(--reader-gutter) 6px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .icon-button { display: grid; place-items: center; width: 39px; height: 38px; flex: none; border: 1px solid var(--divider); border-radius: var(--radius-action); background: var(--floating); box-shadow: var(--surface-shadow); color: var(--ink); }
 .icon-button:hover:not(:disabled) { background: var(--hover); }
@@ -311,7 +318,7 @@
 .folders-toggle, .reader-back, .drawer-backdrop { display: none; }
 
 .reader-scroll { min-height: 0; overflow: auto; }
-.letter { padding: 8px clamp(16px, 2.3vw, 32px) 20px; }
+.letter { padding: 8px var(--reader-gutter) 20px; }
 .letter-header { border-bottom: 1px solid var(--divider); padding-bottom: 18px; }
 .letter-title, .letter-meta { display: flex; gap: 10px; align-items: center; }
 .letter-title { justify-content: space-between; }
@@ -325,6 +332,19 @@
 .recipient-details dl { padding-top: 6px; }
 .recipient-details dl div { display: flex; gap: 5px; }
 .letter-date { color: var(--muted); font-size: .75rem; padding-top: 3px; text-align: end; }
+.letter-summary {
+  margin-block-start: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--selected-edge);
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--selected) 45%, var(--reading));
+}
+.letter-summary summary { display: flex; align-items: center; gap: 8px; list-style: none; color: var(--accent); font-size: .8125rem; font-weight: 700; cursor: pointer; }
+.letter-summary summary::-webkit-details-marker { display: none; }
+.letter-summary summary svg { flex: none; }
+.letter-summary-show, .letter-summary-hide { margin-inline-start: auto; font-weight: 550; }
+.letter-summary[open] .letter-summary-show, .letter-summary:not([open]) .letter-summary-hide { display: none; }
+.letter-summary p { max-width: 84ch; margin-block-start: 7px; color: var(--ink); font-size: .8125rem; line-height: 1.55; }
 .letter-body { display: grid; gap: 12px; padding-block: 20px; font-size: .9375rem; line-height: 1.62; white-space: pre-line; overflow-wrap: anywhere; }
 .letter-body p { max-width: 84ch; }
 .letter-image { display: block; width: 100%; aspect-ratio: 2.85; object-fit: cover; border: 1px solid var(--divider); border-radius: var(--radius-panel); background: var(--window); }

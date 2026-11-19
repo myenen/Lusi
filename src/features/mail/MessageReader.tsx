@@ -1,4 +1,4 @@
-import { Archive, ArrowDownToLine, ArrowLeft, ChevronDown, Clock, FileText, Forward, Image, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
+import { Archive, ArrowDownToLine, ArrowLeft, ChevronDown, Clock, FileText, Forward, Image, Mail, MailOpen, Reply, ReplyAll, Sparkles, Star, Trash2 } from 'lucide-react';
 import type { RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, Toolbar } from '../../components/ui/Controls';
@@ -77,6 +77,17 @@ export function MessageReader({ message, headingRef, inert, onUpdateMessage, onB
                   <span className="letter-date">{message.received ?? message.date}</span>
                 </div>
               </div>
+              {message.summary && (
+                <details className="letter-summary" open>
+                  <summary>
+                    <Sparkles size={16} aria-hidden="true" />
+                    <span>{labels.smartSummary}</span>
+                    <span className="letter-summary-show" aria-hidden="true">{labels.showSummary}</span>
+                    <span className="letter-summary-hide" aria-hidden="true">{labels.hideSummary}</span>
+                  </summary>
+                  <p>{message.summary}</p>
+                </details>
+              )}
               <div className="letter-body">{message.body.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>
               {message.image && <img className="letter-image" src={message.image.url} alt={message.image.alt} />}
               {message.attachments && (

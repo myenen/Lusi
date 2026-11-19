@@ -1,13 +1,14 @@
 import { demoMessages, type DemoMessage } from './demo-mail';
 
 type DemoTranslation = Pick<DemoMessage, 'subject' | 'body'> & Partial<Pick<
-  DemoMessage, 'sender' | 'preview' | 'date' | 'received' | 'initials' | 'image' | 'attachments'
+  DemoMessage, 'sender' | 'preview' | 'summary' | 'date' | 'received' | 'initials' | 'image' | 'attachments'
 >>;
 
 const translations: Record<DemoMessage['id'], DemoTranslation> = {
   'field-notes': {
     subject: 'Dolomitler saha notları',
     preview: 'Rota, saha notları ve dağ sırtından bir önizleme.',
+    summary: 'Cuma günü gün doğmadan patika başlangıcında buluşulup üst patikadan dağ sırtına çıkılacak. Saha notları ve bir fotoğraf ekte.',
     body: [
       'Merhaba,',
       'Rota belli oldu. Cuma günü gün doğmadan patikanın başlangıcında buluşup üst patikadan dağ sırtına çıkacağız. Saha notlarını ve bulutların üstündeki manzaradan bir fotoğrafı ekledim.',
@@ -22,10 +23,12 @@ const translations: Record<DemoMessage['id'], DemoTranslation> = {
   },
   trip: {
     subject: 'Hafta sonu planları',
+    summary: 'Ayla, cumartesi saat on civarında vapur iskelesinde buluşup sahilde yürümeyi öneriyor. Kahveyi kendisi getirecek.',
     body: ['Cumartesi sahilde yürüyüş için hava güzel görünüyor. Saat on gibi vapur iskelesinde buluşalım mı?', 'Kahveyi ben getiririm.'],
   },
   notes: {
     subject: 'Tasarım değerlendirmesinden notlar',
+    summary: 'Tasarım değerlendirmesinde daha sade bir gelen kutusu ve daha rahat okunabilen bir ileti görünümü öne çıktı.',
     body: ['Bu sabahki kararları bir araya getirdim. Daha sade bir gelen kutusuna ve daha rahat okunabilen bir ileti görünümüne odaklanacağız.', 'Atladığım bir şey varsa haber ver.'],
   },
   welcome: {

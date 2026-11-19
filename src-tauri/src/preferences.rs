@@ -43,7 +43,7 @@ impl Default for Preferences {
             language: Language::System,
             sidebar_collapsed: false,
             sidebar_width: 222,
-            list_width: 348,
+            list_width: 380,
         }
     }
 }

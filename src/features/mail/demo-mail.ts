@@ -16,6 +16,7 @@ export interface DemoMessage {
   address: string;
   subject: string;
   preview?: string;
+  summary?: string;
   body: string[];
   date: string;
   received?: string;
@@ -41,6 +42,7 @@ export const demoMessages: DemoMessage[] = [
     address: 'mona@example.com',
     subject: 'Dolomites field notes',
     preview: 'The route, field notes, and a little preview from the ridge.',
+    summary: 'Meet at the trailhead before sunrise on Friday and take the upper trail to the ridge. Field notes and a photo are attached.',
     body: [
       'Hi,',
       'The route is set. We’ll meet at the trailhead on Friday before sunrise and take the upper path to the ridge. I’ve attached the field notes and a preview of what the view looks like above the clouds.',
@@ -61,11 +63,13 @@ export const demoMessages: DemoMessage[] = [
   },
   {
     id: 'trip', sender: 'Ayla Chen', address: 'ayla@example.com', subject: 'Weekend plans',
+    summary: 'Ayla suggests meeting at the ferry around ten on Saturday for a walk by the water. She’ll bring coffee.',
     body: ['The weather looks good for a walk by the water on Saturday. Want to meet at the ferry around ten?', 'I’ll bring coffee.'],
     date: '09:17', initials: 'A', tone: 'blue', folder: 'inbox', label: 'personal', unread: true, starred: true,
   },
   {
     id: 'notes', sender: 'Sam Rivera', address: 'sam@example.com', subject: 'Notes from our design review',
+    summary: 'The design review focused on a calmer inbox and a more readable message view.',
     body: ['I pulled together the decisions from this morning. We’ll keep the focus on a calmer inbox and a more readable message view.', 'Let me know if I missed anything.'],
     date: '08:30', initials: 'S', tone: 'teal', folder: 'inbox', label: 'work', unread: true,
   },
