@@ -1,17 +1,18 @@
-import { Inbox, Menu, Search, Star } from 'lucide-react';
+import { Archive, Inbox, Mail, MailOpen, Menu, Search, Star, Trash2 } from 'lucide-react';
 import type { ReactNode, RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
-import { IconButton, SegmentedFilter, type Filter } from '../../components/ui/Controls';
-import type { DemoMessage } from './demo-mail';
+import { IconButton, SegmentedFilter, Toolbar, type Filter } from '../../components/ui/Controls';
+import type { DemoMessage, DemoMessagePatch } from './demo-mail';
 
-function MailRow({ message, selected, onSelect }: {
+function MailRow({ message, selected, onSelect, onUpdate }: {
   message: DemoMessage;
   selected: boolean;
   onSelect: (trigger: HTMLButtonElement) => void;
+  onUpdate: (patch: DemoMessagePatch, trigger: HTMLButtonElement) => void;
 }) {
   const labels = useLabels();
   return (
-    <li>
+    <li className="message-list-item">
       <button type="button" className="message-row" data-unread={Boolean(message.unread)} aria-current={selected ? 'true' : undefined} onClick={(event) => onSelect(event.currentTarget)}>
         <span className="unread-dot" aria-hidden="true" />
         {message.unread && <span className="sr-only">{labels.filters.unread}</span>}
@@ -26,13 +27,22 @@ function MailRow({ message, selected, onSelect }: {
           {message.starred && <><Star className="star" size={15} aria-hidden="true" /><span className="sr-only">{labels.filters.starred}</span></>}
         </span>
       </button>
+      <Toolbar className="message-row-actions" label={`${labels.manageMessage} · ${message.subject}`}>
+        {message.folder !== 'archive' && message.folder !== 'trash' && message.folder !== 'drafts' && (
+          <IconButton label={labels.archiveMessage} icon={Archive} onClick={(event) => onUpdate({ folder: 'archive' }, event.currentTarget)} />
+        )}
+        <IconButton label={message.unread ? labels.markRead : labels.markUnread} icon={message.unread ? MailOpen : Mail} onClick={(event) => onUpdate({ unread: !message.unread }, event.currentTarget)} />
+        {message.folder !== 'trash' && (
+          <IconButton label={labels.moveToTrash} icon={Trash2} onClick={(event) => onUpdate({ folder: 'trash' }, event.currentTarget)} />
+        )}
+      </Toolbar>
     </li>
   );
 }
 
 export function MailList({
   title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen, onSearch,
-  onFilter, onSelect, onToggleFolders, divider,
+  onFilter, onSelect, onUpdateMessage, onToggleFolders, divider,
 }: {
   title: string;
   messages: DemoMessage[];
@@ -45,6 +55,7 @@ export function MailList({
   onSearch: (value: string) => void;
   onFilter: (filter: Filter) => void;
   onSelect: (id: string, trigger: HTMLButtonElement) => void;
+  onUpdateMessage: (id: DemoMessage['id'], patch: DemoMessagePatch, trigger: HTMLButtonElement) => void;
   onToggleFolders: () => void;
   divider: ReactNode;
 }) {
@@ -66,7 +77,7 @@ export function MailList({
       {messages.length ? (
         <ul className="message-list">
           {messages.map((message) => (
-            <MailRow key={message.id} message={message} selected={message.id === selectedId} onSelect={(trigger) => onSelect(message.id, trigger)} />
+            <MailRow key={message.id} message={message} selected={message.id === selectedId} onSelect={(trigger) => onSelect(message.id, trigger)} onUpdate={(patch, trigger) => onUpdateMessage(message.id, patch, trigger)} />
           ))}
         </ul>
       ) : (

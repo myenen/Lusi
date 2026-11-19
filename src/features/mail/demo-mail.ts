@@ -1,6 +1,6 @@
 export type Mailbox = 'inbox' | 'sent' | 'drafts' | 'trash' | 'archive';
 export type Label = 'work' | 'personal' | 'projects' | 'travel';
-export type Folder = Mailbox | Label | 'starred';
+export type Folder = Mailbox | Label | 'starred' | 'snoozed';
 type MessageId = 'field-notes' | 'trip' | 'notes' | 'welcome' | 'files' | 'books' | 'travel' | 'confirmed' | 'packing' | 'old';
 
 export interface DemoAttachment {
@@ -25,9 +25,12 @@ export interface DemoMessage {
   label?: Label;
   unread?: boolean;
   starred?: boolean;
+  snoozedUntil?: number;
   image?: { url: string; alt: string };
   attachments?: DemoAttachment[];
 }
+
+export type DemoMessagePatch = Partial<Pick<DemoMessage, 'folder' | 'unread' | 'starred' | 'snoozedUntil'>>;
 
 const ridge = '/demo/dolomites.jpg';
 
@@ -109,6 +112,8 @@ export const demoMessages: DemoMessage[] = [
 ];
 
 export function isInFolder(message: DemoMessage, folder: Folder) {
+  if (folder === 'snoozed') return message.snoozedUntil !== undefined;
+  if (message.snoozedUntil !== undefined) return false;
   if (folder === 'starred') return message.starred && message.folder !== 'trash';
   return message.folder === folder || (message.label === folder && message.folder !== 'trash');
 }

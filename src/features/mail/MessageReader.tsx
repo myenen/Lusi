@@ -1,8 +1,8 @@
-import { Archive, ArrowDownToLine, ArrowLeft, ChevronDown, FileText, Forward, Image, Mail, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
+import { Archive, ArrowDownToLine, ArrowLeft, ChevronDown, Clock, FileText, Forward, Image, Mail, MailOpen, Reply, ReplyAll, Star, Trash2 } from 'lucide-react';
 import type { RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, Toolbar } from '../../components/ui/Controls';
-import type { DemoAttachment, DemoMessage } from './demo-mail';
+import type { DemoAttachment, DemoMessage, DemoMessagePatch } from './demo-mail';
 
 export type ReplyMode = 'reply' | 'replyAll' | 'forward';
 
@@ -24,22 +24,32 @@ function AttachmentChip({ attachment }: { attachment: DemoAttachment }) {
   );
 }
 
-export function MessageReader({ message, headingRef, inert, onBack, onReply }: {
+export function MessageReader({ message, headingRef, inert, onUpdateMessage, onBack, onReply }: {
   message?: DemoMessage;
   headingRef: RefObject<HTMLHeadingElement | null>;
   inert: boolean;
+  onUpdateMessage: (id: DemoMessage['id'], patch: DemoMessagePatch, trigger: HTMLButtonElement) => void;
   onBack: () => void;
   onReply: (mode: ReplyMode, message: DemoMessage) => void;
 }) {
   const labels = useLabels();
   return (
-    <main className="reader" aria-label={labels.reader} inert={inert}>
+    <main className="reader" aria-label={labels.reader} inert={inert} tabIndex={-1}>
       <header className="reader-toolbar">
         <IconButton className="reader-back" label={labels.backToMessages} icon={ArrowLeft} onClick={onBack} />
         {message && (
-          <Toolbar label={labels.manageMessage}>
-            <IconButton label={labels.archiveMessage} title={labels.archiveUnavailable} icon={Archive} disabled />
-            <IconButton label={labels.deleteMessage} title={labels.deleteUnavailable} icon={Trash2} disabled />
+          <Toolbar label={labels.manageMessage} className="reader-actions">
+            <IconButton label={message.starred ? labels.removeStar : labels.addStar} icon={Star} aria-pressed={Boolean(message.starred)} onClick={(event) => onUpdateMessage(message.id, { starred: !message.starred }, event.currentTarget)} />
+            <IconButton label={message.unread ? labels.markRead : labels.markUnread} icon={message.unread ? MailOpen : Mail} onClick={(event) => onUpdateMessage(message.id, { unread: !message.unread }, event.currentTarget)} />
+            <IconButton label={message.snoozedUntil === undefined ? labels.snoozeMessage : labels.endSnooze} icon={Clock} aria-pressed={message.snoozedUntil !== undefined}
+              disabled={message.folder === 'trash' || message.folder === 'drafts'} onClick={(event) => {
+                const tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                tomorrow.setHours(9, 0, 0, 0);
+                onUpdateMessage(message.id, { snoozedUntil: message.snoozedUntil === undefined ? tomorrow.getTime() : undefined }, event.currentTarget);
+              }} />
+            <IconButton label={labels.archiveMessage} icon={Archive} disabled={message.folder === 'archive' || message.folder === 'trash' || message.folder === 'drafts'} onClick={(event) => onUpdateMessage(message.id, { folder: 'archive' }, event.currentTarget)} />
+            <IconButton label={labels.moveToTrash} icon={Trash2} disabled={message.folder === 'trash'} onClick={(event) => onUpdateMessage(message.id, { folder: 'trash' }, event.currentTarget)} />
           </Toolbar>
         )}
       </header>

@@ -79,6 +79,73 @@ describe('sample mailbox', () => {
     expect(within(reader).getByText(/decisions from this morning/)).toBeTruthy();
   });
 
+  it('updates the sample mailbox from row actions without opening another message', () => {
+    render(<App />);
+    const actions = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
+    const inbox = screen.getByRole('button', { name: /^Inbox/ });
+    fireEvent.click(actions.getByRole('button', { name: 'Mark as read' }));
+    expect(actions.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
+    expect(within(inbox).getByLabelText('3 unread')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Dolomites field notes' })).toBeTruthy();
+
+    const archive = actions.getByRole('button', { name: 'Archive message' });
+    act(() => archive.focus());
+    fireEvent.click(archive);
+    expect(screen.queryByRole('button', { name: /weekend plans/i })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('searchbox'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    const archived = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
+    expect(archived.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
+    fireEvent.click(archived.getByRole('button', { name: 'Move to Trash' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trash' }));
+    const trashed = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
+    expect(trashed.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
+    expect(trashed.queryByRole('button', { name: 'Move to Trash' })).toBeNull();
+  });
+
+  it('shares reader actions with the mailbox', () => {
+    render(<App />);
+    const toolbar = within(screen.getByRole('group', { name: 'Manage message' }));
+    expect(toolbar.getAllByRole('button')).toHaveLength(5);
+
+    fireEvent.click(toolbar.getByRole('button', { name: 'Add star' }));
+    fireEvent.click(toolbar.getByRole('button', { name: 'Mark as read' }));
+    fireEvent.click(toolbar.getByRole('button', { name: 'Archive message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    fireEvent.click(screen.getByRole('button', { name: /dolomites field notes/i }));
+    expect(toolbar.getByRole('button', { name: 'Remove star' }).getAttribute('aria-pressed')).toBe('true');
+    expect(toolbar.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
+    fireEvent.click(toolbar.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Trash' }));
+    expect(screen.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
+  });
+
+  it('returns snoozed messages early on request or at 09:00 the next day', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 20, 18));
+    render(<App />);
+    const toolbar = () => within(screen.getByRole('group', { name: 'Manage message' }));
+    const snooze = () => fireEvent.click(toolbar().getByRole('button', { name: 'Snooze until tomorrow at 09:00' }));
+    const fieldNotes = () => screen.queryByRole('button', { name: /dolomites field notes/i });
+    snooze();
+    expect(fieldNotes()).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Snoozed/ }));
+    expect(fieldNotes()).toBeTruthy();
+    fireEvent.click(toolbar().getByRole('button', { name: 'End snooze' }));
+    expect(fieldNotes()).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
+    expect(fieldNotes()).toBeTruthy();
+    snooze();
+    act(() => vi.advanceTimersByTime(15 * 60 * 60 * 1000 - 1));
+    expect(fieldNotes()).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(fieldNotes()).toBeTruthy();
+  });
+
   it('filters messages within the current folder and clears search when switching folders', () => {
     render(<App />);
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'weekend' } });

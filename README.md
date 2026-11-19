@@ -10,6 +10,8 @@ Lusi is a lightweight, privacy-focused desktop mail client in development for ma
 
 - Three resizable panes, with a collapsible icon rail on desktop and a folder drawer and list-to-reader view in narrow windows.
 - Folder navigation, search, unread and starred filters, a plain-text reader, and sample attachments.
+- Hover over or focus a message row for quick archive, read/unread, and move-to-trash actions. Changes to the sample mailbox last until the window is reloaded.
+- The reader toolbar adds stars and snoozes messages until 09:00 the next day. Use the Snoozed folder to end a snooze early.
 - Compose and reply previews, with one-click controls for system, light, and dark appearance. The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
 - Turkish and English. The interface follows the system language by default, with English as the fallback. Hover over the appearance controls or focus them with the keyboard to reveal the language and theme settings.

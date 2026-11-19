@@ -1,8 +1,8 @@
-import { Archive, BriefcaseBusiness, FilePenLine, FolderKanban, Inbox, PanelLeftClose, PanelLeftOpen, PenLine, Plane, Send, Star, Trash2, UserRound, X, type LucideIcon } from 'lucide-react';
+import { Archive, BriefcaseBusiness, Clock, FilePenLine, FolderKanban, Inbox, PanelLeftClose, PanelLeftOpen, PenLine, Plane, Send, Star, Trash2, UserRound, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
-import { demoMessages, isInFolder, type Folder } from './demo-mail';
+import { isInFolder, type DemoMessage, type Folder } from './demo-mail';
 import { SidebarPreferences } from './SidebarPreferences';
 
 interface FolderEntry { id: Folder; icon: LucideIcon; count?: 'unread' | 'all'; }
@@ -14,6 +14,7 @@ const mailboxes: FolderEntry[] = [
   { id: 'drafts', icon: FilePenLine, count: 'all' },
   { id: 'trash', icon: Trash2 },
   { id: 'archive', icon: Archive },
+  { id: 'snoozed', icon: Clock, count: 'all' },
 ];
 
 const customFolders: FolderEntry[] = [
@@ -23,15 +24,15 @@ const customFolders: FolderEntry[] = [
   { id: 'travel', icon: Plane },
 ];
 
-function FolderLinks({ entries, selected, tooltips, onSelect }: { entries: FolderEntry[]; selected: Folder; tooltips: boolean; onSelect: (folder: Folder) => void }) {
+function FolderLinks({ entries, messages, selected, tooltips, onSelect }: { entries: FolderEntry[]; messages: DemoMessage[]; selected: Folder; tooltips: boolean; onSelect: (folder: Folder) => void }) {
   const labels = useLabels();
   return entries.map(({ id, icon: Icon, count }) => {
     const label = labels.folders[id];
-    const total = count ? demoMessages.filter((message) => isInFolder(message, id) && (count === 'all' || message.unread)).length : 0;
+    const total = count ? messages.filter((message) => isInFolder(message, id) && (count === 'all' || message.unread)).length : 0;
     const countLabel = count === 'unread' ? labels.unreadCount(total) : labels.messageCount(total);
 
     return (
-      <button key={id} type="button" className="folder-link" title={tooltips ? label : undefined} aria-current={id === selected ? 'page' : undefined} onClick={() => onSelect(id)}>
+      <button key={id} type="button" className="folder-link" data-folder={id} title={tooltips ? label : undefined} aria-current={id === selected ? 'page' : undefined} onClick={() => onSelect(id)}>
         <Icon size={17} aria-hidden="true" />
         <span className="sidebar-copy">{label}</span>
         {total > 0 && <span className="folder-count sidebar-copy" aria-label={countLabel}>{total}</span>}
@@ -40,8 +41,9 @@ function FolderLinks({ entries, selected, tooltips, onSelect }: { entries: Folde
   });
 }
 
-export function Sidebar({ folder, open, collapsed, canToggle, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
+export function Sidebar({ folder, messages, open, collapsed, canToggle, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
   folder: Folder;
+  messages: DemoMessage[];
   open: boolean;
   collapsed: boolean;
   canToggle: boolean;
@@ -78,9 +80,9 @@ export function Sidebar({ folder, open, collapsed, canToggle, onToggle, onClose,
           <PenLine size={17} aria-hidden="true" /><span className="sidebar-copy">{labels.compose}</span>
         </button>
         <nav className="mailboxes" aria-label={labels.mailFolders}>
-          <FolderLinks entries={mailboxes} selected={folder} tooltips={tooltips} onSelect={onSelect} />
+          <FolderLinks entries={mailboxes} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
           <h2 className="folder-heading"><span className="sidebar-copy">{labels.folderHeading}</span></h2>
-          <FolderLinks entries={customFolders} selected={folder} tooltips={tooltips} onSelect={onSelect} />
+          <FolderLinks entries={customFolders} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
         </nav>
       </div>
       <SidebarPreferences compact={tooltips} appearance={appearance}>

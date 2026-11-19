@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Filter } from '../components/ui/Controls';
 import { Composer, emptyDraft, type ComposeTarget } from '../features/mail/Composer';
-import { demoMessages, isInFolder, type Folder } from '../features/mail/demo-mail';
+import { demoMessages, isInFolder, type DemoMessage, type DemoMessagePatch, type Folder } from '../features/mail/demo-mail';
 import { turkishDemoMessages } from '../features/mail/demo-mail.tr';
 import { MailList } from '../features/mail/MailList';
 import { MessageReader } from '../features/mail/MessageReader';
@@ -21,6 +21,7 @@ export function App() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [selectedId, setSelectedId] = useState<string>();
+  const [messagePatches, setMessagePatches] = useState<Partial<Record<DemoMessage['id'], DemoMessagePatch>>>({});
   const [mobilePane, setMobilePane] = useState<'list' | 'reader'>('list');
   const [showFolders, setShowFolders] = useState(false);
   const [compose, setCompose] = useState<ComposeTarget>();
@@ -36,7 +37,8 @@ export function App() {
   const labels = catalog[locale];
   const queryText = query.trim();
   const needle = queryText.toLocaleLowerCase(locale);
-  const messages = (locale === 'tr' ? turkishDemoMessages : demoMessages).filter((message) => (
+  const mailbox = (locale === 'tr' ? turkishDemoMessages : demoMessages).map((message) => ({ ...message, ...messagePatches[message.id] }));
+  const messages = mailbox.filter((message) => (
     isInFolder(message, folder)
     && (filter === 'all' || message[filter])
     && (message.address.toLowerCase().includes(queryText.toLowerCase())
@@ -72,6 +74,19 @@ export function App() {
   }, [ready, themeId, colorScheme]);
 
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
+
+  useEffect(() => {
+    const deadlines = Object.values(messagePatches).flatMap((patch) => patch.snoozedUntil ?? []);
+    if (!deadlines.length) return;
+
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      setMessagePatches((current) => Object.fromEntries(Object.entries(current).map(([id, patch]) => [
+        id, patch.snoozedUntil !== undefined && patch.snoozedUntil <= now ? { ...patch, snoozedUntil: undefined } : patch,
+      ])));
+    }, Math.max(0, Math.min(...deadlines) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [messagePatches]);
 
   useEffect(() => {
     if (!messageTrigger.current || !window.matchMedia?.('(max-width: 46rem)').matches) return;
@@ -123,6 +138,18 @@ export function App() {
     if (showFolders) closeFolders();
   }
 
+  function updateDemoMessage(id: DemoMessage['id'], patch: DemoMessagePatch, trigger: HTMLButtonElement) {
+    const mayRemoveTrigger = patch.folder || 'snoozedUntil' in patch
+      || (patch.unread === false && filter === 'unread')
+      || (patch.starred === false && (filter === 'starred' || folder === 'starred'));
+    if (mayRemoveTrigger && document.activeElement === trigger) {
+      (trigger.closest('main') ?? searchInput.current)?.focus();
+    }
+    setMessagePatches((current) => ({
+      ...current, [id]: { ...current[id], ...patch, ...(patch.folder ? { snoozedUntil: undefined } : {}) },
+    }));
+  }
+
   return (
     <LocaleContext value={locale}>
       <div className="workspace" data-theme={preferences.theme} data-theme-id={themeId} data-color-scheme={colorScheme} data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
@@ -134,7 +161,7 @@ export function App() {
           {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
           {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
           <Sidebar
-            folder={folder} open={showFolders} collapsed={preferences.sidebarCollapsed} canToggle={ready}
+            folder={folder} messages={mailbox} open={showFolders} collapsed={preferences.sidebarCollapsed} canToggle={ready}
             onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
             onClose={closeFolders} onSelect={chooseFolder} onCompose={() => setCompose({ mode: 'new' })}
             appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={!ready} />}
@@ -149,9 +176,11 @@ export function App() {
             search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
             onSearch={setQuery} onFilter={setFilter} onToggleFolders={() => setShowFolders(!showFolders)}
             onSelect={(id, trigger) => { messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader'); }}
+            onUpdateMessage={updateDemoMessage}
             divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={!ready} onResize={(listWidth, save) => update({ listWidth }, save)} />}
           />
-          <MessageReader message={selected} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')} onReply={(mode, message) => setCompose({ mode, message })} />
+          <MessageReader message={selected} headingRef={readerHeading} inert={showFolders} onUpdateMessage={updateDemoMessage}
+            onBack={() => setMobilePane('list')} onReply={(mode, message) => setCompose({ mode, message })} />
         </div>
         {error && <p className="preference-error" role="status">{labels.preferenceErrors[error]}</p>}
         {compose && <Composer target={compose} newDraft={newDraft} onDraftChange={setNewDraft} onClose={() => setCompose(undefined)} />}
