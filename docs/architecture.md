@@ -2,6 +2,8 @@
 
 The desktop shell in `src-tauri/` hosts the React application in the platform WebView. Vite serves the UI on loopback during development and bundles static assets into the desktop build. Two commands scoped to the main window load and save theme and pane widths in a small JSON file under the application configuration directory. The packaged build uses a restricted content security policy.
 
+The workspace fills the desktop content area. On macOS, the native title bar is overlaid on the workspace so the system window controls sit above the sidebar. Only the main macOS window can use the drag region. The browser preview reserves the same space on macOS, and Windows uses its native title bar.
+
 The React shell in `src/app/` coordinates folder, search, filters, selection, and appearance. It reads static fixtures from `src/features/mail/demo-mail.ts` and renders message bodies as plain text. The example image and download links resolve to assets bundled with the app. The compose preview keeps new message text in memory for the session.
 
 As real account support is added, Rust will own mail transport, MIME, credential storage, SQLite, and background tasks. React will consume narrowly scoped typed commands and events. Account credentials belong in the OS credential store. Message HTML will require sanitization and isolation before it can be rendered.

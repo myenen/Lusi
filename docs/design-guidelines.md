@@ -1,10 +1,10 @@
-# Luma — UI/UX Design Guidelines
+# Lusi — UI/UX Design Guidelines
 
 > Version 1.0 · Desktop email client · macOS & Windows
 
 ## 1. Product direction
 
-Luma is a minimal, local-first, open-source desktop email client. Its interface should feel calm, clear, fast, and carefully crafted. Use an Apple-inspired **Liquid Glass** visual language without copying platform-specific proprietary assets. The latest approved direction is a detailed three-column mail interface in both light and dark themes, with translucent layered surfaces, restrained blue/violet accents, and the Luma envelope/L symbol.
+Lusi is a minimal, local-first, open-source desktop email client. Its interface should feel calm, clear, fast, and carefully crafted. Use an Apple-inspired **Liquid Glass** visual language without copying platform-specific proprietary assets. The latest approved direction is a detailed three-column mail interface in both light and dark themes, with translucent layered surfaces, restrained blue/violet accents, and the Lusi bird mark.
 
 **Priority order:** readability → usability → accessibility → performance → visual effects.
 
@@ -24,7 +24,7 @@ Default: three columns.
 
 | Region | Suggested width | Contents |
 | --- | --- | --- |
-| Navigation sidebar | 220–250 px | Luma logo, Compose, Inbox, Starred, Sent, Drafts, Trash, Archive, folders, accounts, settings |
+| Navigation sidebar | 220–250 px | Lusi logo, Compose, Inbox, Starred, Sent, Drafts, Trash, Archive, folders, accounts, settings |
 | Message list | 340–400 px | Search, filters, message rows, timestamps, unread and starred states |
 | Reading pane | Remaining space, min ~420 px | Subject, sender, actions, sanitized message body, attachments, reply |
 
@@ -94,13 +94,13 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Sender names: medium/semibold; subjects: semibold only for unread messages.
 - Secondary timestamps and previews: muted but readable.
 - Avoid text on highly transparent backgrounds; check WCAG AA contrast (4.5:1 normal text, 3:1 large text and meaningful UI graphics).
-- Primary accent: blue-violet, consistent with the approved Luma logo. Cyan is a restrained secondary accent.
+- Primary accent: blue-violet, consistent with the approved Lusi logo. Cyan is a restrained secondary accent.
 - Error, success, and warning colors should have semantic meaning, not decorative use.
 
 ## 6. Components and states
 
 ### Sidebar
-- Show Luma mark at top; one clear **Compose** action.
+- Show Lusi mark at top; one clear **Compose** action.
 - Folder icons should be thin, consistent, and legible at 16–20 px.
 - Highlight active folder with a soft translucent pill and restrained accent.
 - Show unread counts as compact badges, not oversized bright bubbles.
@@ -150,9 +150,9 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ## 9. Logo and iconography
 
-- Brand: **Luma**.
-- Approved symbol direction: rounded-square envelope silhouette combining an abstract **L** with a folded flap; blue/cyan/violet palette.
-- Use the user-approved **flat, text-free transparent** mark as the source of truth for application assets. Do not recreate or distort it without approval.
+- Brand: **Lusi**.
+- Approved symbol: the abstract Lusi bird. Use the blue-violet variant in light mode and the white variant in dark mode.
+- Use the approved transparent PNGs as the source for interface and application assets. Preserve their proportions. The app icon uses the blue-violet variant.
 - Export required sizes: 16, 24, 32, 64, 128, 256, 512, 1024 px as appropriate; also prepare monochrome tray icons.
 - Maintain clear space and avoid putting the icon inside another unnecessary frame.
 - Any visual reference mockup is guidance, not a pixel-perfect implementation requirement.
@@ -186,4 +186,4 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ## 12. Scope and references
 
-This document captures the agreed design direction from the Luma concept conversation: Apple-inspired Liquid Glass, a minimalist three-column email UI, detailed light/dark views, and the approved blue-violet flat envelope/L mark. Values are implementation starting points, not measured performance guarantees. Revisit them after testing actual Tauri WebViews on both operating systems.
+This document captures the agreed design direction from the Lusi concept conversation: Apple-inspired Liquid Glass, a minimalist three-column email UI, detailed light/dark views, and the approved blue-violet and white bird marks. Values are implementation starting points, not measured performance guarantees. Revisit them after testing actual Tauri WebViews on both operating systems.

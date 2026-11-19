@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Luma",
+  "productName": "Lusi",
   "version": "0.1.0",
   "identifier": "dev.minimalmail.desktop",
   "build": {
@@ -13,7 +13,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "Luma",
+        "title": "Lusi",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 16 },
         "width": 1260,
         "height": 820,
         "minWidth": 380,
@@ -28,6 +31,12 @@
           "identifier": "ui-preferences",
           "windows": ["main"],
           "permissions": ["allow-load-ui-preferences", "allow-save-ui-preferences"]
+        },
+        {
+          "identifier": "macos-titlebar",
+          "platforms": ["macOS"],
+          "windows": ["main"],
+          "permissions": ["core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize"]
         }
       ]
     }

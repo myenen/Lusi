@@ -9,6 +9,8 @@ import { PaneDivider } from './PaneDivider';
 import { ThemeSelect } from './ThemeSelect';
 import { useUiPreferences } from './ui-preferences';
 
+const hasMacTitleBar = /\bMacintosh\b/.test(navigator.userAgent) && navigator.maxTouchPoints < 2;
+
 export function App() {
   const [folder, setFolder] = useState<Folder>('inbox');
   const [query, setQuery] = useState('');
@@ -82,11 +84,12 @@ export function App() {
   }
 
   return (
-    <div className="workspace" data-theme={preferences.theme}>
+    <div className="workspace" data-theme={preferences.theme} data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
       <div className="mail-shell" data-pane={mobilePane} style={{
         '--sidebar-width': `${preferences.sidebarWidth}px`,
         '--list-width': `${preferences.listWidth}px`,
       } as CSSProperties}>
+        {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
         {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
         <Sidebar
           folder={folder} open={showFolders} onClose={closeFolders} onSelect={chooseFolder} onCompose={() => setCompose({ mode: 'new' })}

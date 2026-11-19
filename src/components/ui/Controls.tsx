@@ -25,7 +25,7 @@ const filters: { id: Filter; label: string }[] = [
 
 export function SegmentedFilter({ value, onChange }: { value: Filter; onChange: (filter: Filter) => void }) {
   return (
-    <div className="segmented-filter" role="group" aria-label="Filter messages">
+    <div className="segmented-filter" data-value={value} role="group" aria-label="Filter messages">
       {filters.map(({ id, label }) => (
         <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)}>
           {label}

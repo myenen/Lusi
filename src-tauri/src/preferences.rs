@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn replaces_preferences_and_falls_back_for_invalid_contents() -> io::Result<()> {
         let directory =
-            std::env::temp_dir().join(format!("luma-preferences-{}", std::process::id()));
+            std::env::temp_dir().join(format!("lusi-preferences-{}", std::process::id()));
         let path = directory.join("ui-preferences.json");
         write_preferences(&path, Preferences::default())?;
         let custom = Preferences {

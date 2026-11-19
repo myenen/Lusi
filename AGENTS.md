@@ -1,4 +1,4 @@
-# Luma — AI Development Instructions
+# Lusi — AI Development Instructions
 
 > Canonical instructions for AI coding agents contributing to this repository. Follow these rules unless a maintainer explicitly changes them.
 

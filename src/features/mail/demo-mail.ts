@@ -66,12 +66,12 @@ export const demoMessages: DemoMessage[] = [
     date: '08:30', initials: 'S', tone: 'teal', folder: 'inbox', label: 'work', unread: true,
   },
   {
-    id: 'welcome', sender: 'Luma Support', address: 'support@example.com', subject: 'Welcome to Luma',
+    id: 'welcome', sender: 'Lusi Support', address: 'support@example.com', subject: 'Welcome to Lusi',
     preview: 'A little space for the mail that matters.',
     body: [
       'Welcome to your sample inbox.',
       'Open a message, search for a conversation, or switch between folders to get a feel for the workspace. You can also adjust how much space each pane uses and choose the appearance that works for you.',
-      'See you in the inbox,\nLuma',
+      'See you in the inbox,\nLusi',
     ],
     date: 'Yesterday', initials: 'L', tone: 'violet', folder: 'inbox', unread: true,
   },

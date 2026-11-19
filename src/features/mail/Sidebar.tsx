@@ -1,6 +1,5 @@
 import { Archive, FilePenLine, FolderClosed, Inbox, PenLine, Send, Star, Trash2, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
-import lumaIcon from '../../assets/luma.png?no-inline';
 import { IconButton } from '../../components/ui/Controls';
 import { demoMessages, isInFolder, type Folder } from './demo-mail';
 
@@ -57,7 +56,7 @@ export function Sidebar({ folder, open, onClose, onSelect, onCompose, appearance
     <aside id="sidebar" className="sidebar glass-panel" data-open={open} aria-label="Sidebar" role={open ? 'dialog' : undefined} aria-modal={open || undefined}>
       <div className="sidebar-scroll">
         <div className="brand">
-          <img className="brand-icon" src={lumaIcon} alt="" />Luma
+          <span className="brand-icon" aria-hidden="true" />Lusi
           {open && <IconButton ref={close} className="drawer-close" label="Close folders" icon={X} onClick={onClose} />}
         </div>
         <button type="button" className="compose-button" onClick={onCompose}><PenLine size={17} aria-hidden="true" />Compose</button>
