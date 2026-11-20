@@ -1,5 +1,5 @@
 import { FileText, Paperclip, Send, X } from 'lucide-react';
-import { useContext, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useContext, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { LocaleContext, useLabels, type Locale } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import { splitAddresses, type Draft, type SavedDraft } from './demo-compose';
@@ -12,9 +12,10 @@ function formatFileSize(bytes: number, locale: Locale) {
   return `${number.format(bytes)} B`;
 }
 
-export function Composer({ entry, onDraftChange, onSend, onClose }: {
+export function Composer({ entry, onDraftChange, onSendStart, onSend, onClose }: {
   entry: SavedDraft;
   onDraftChange: (draft: Draft) => void;
+  onSendStart: () => void;
   onSend: () => void;
   onClose: () => void;
 }) {
@@ -23,6 +24,7 @@ export function Composer({ entry, onDraftChange, onSend, onClose }: {
   const locale = useContext(LocaleContext);
   const [showCopies, setShowCopies] = useState(Boolean(draft.cc || draft.bcc));
   const [sendState, setSendState] = useState<'idle' | 'invalid' | 'sending' | 'failed'>('idle');
+  const fieldId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -30,6 +32,7 @@ export function Composer({ entry, onDraftChange, onSend, onClose }: {
   const attachButton = useRef<HTMLButtonElement>(null);
   const sendTimer = useRef<number | undefined>(undefined);
   const sending = sendState === 'sending';
+  const headerFields = showCopies ? ['to', 'cc', 'bcc', 'subject'] as const : ['to', 'subject'] as const;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -53,6 +56,7 @@ export function Composer({ entry, onDraftChange, onSend, onClose }: {
       setSendState('invalid');
       return;
     }
+    onSendStart();
     setSendState('sending');
     sendTimer.current = window.setTimeout(() => {
       sendTimer.current = undefined;
@@ -72,15 +76,23 @@ export function Composer({ entry, onDraftChange, onSend, onClose }: {
       </header>
       <form onSubmit={send}>
         <fieldset className="composer-fields" disabled={sending}>
-          <div className="composer-recipient">
-            <label>{labels.to}<input ref={toRef} value={draft.to} onChange={(event) => change('to', event.target.value)} /></label>
-            <button className="text-button" type="button" aria-expanded={showCopies} onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
+          <div className="composer-headers">
+            {headerFields.map((field) => {
+              const id = `${fieldId}-${field}`;
+              const input = <input id={id} ref={field === 'to' ? toRef : undefined} value={draft[field]} onChange={(event) => change(field, event.target.value)} />;
+              return (
+                <Fragment key={field}>
+                  <label htmlFor={id}>{labels[field]}</label>
+                  {field === 'to' ? (
+                    <div className="composer-recipient">
+                      {input}
+                      <button className="text-button" type="button" aria-expanded={showCopies} onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
+                    </div>
+                  ) : input}
+                </Fragment>
+              );
+            })}
           </div>
-          {showCopies && <>
-            <label>{labels.cc}<input value={draft.cc} onChange={(event) => change('cc', event.target.value)} /></label>
-            <label>{labels.bcc}<input value={draft.bcc} onChange={(event) => change('bcc', event.target.value)} /></label>
-          </>}
-          <label>{labels.subject}<input value={draft.subject} onChange={(event) => change('subject', event.target.value)} /></label>
           <textarea ref={bodyRef} aria-label={labels.messageBody} placeholder={labels.writeMessage} value={draft.body} onChange={(event) => change('body', event.target.value)} />
           {draft.attachments.length > 0 && (
             <ul className="composer-attachments" aria-label={labels.attachments}>

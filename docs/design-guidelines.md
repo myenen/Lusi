@@ -101,6 +101,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ### Sidebar
 - Show Lusi mark at top; one clear **Compose** action.
+- On a collapsed desktop sidebar, swap the logo for the expand button on hover or keyboard focus. Keep the button visible when hover is unavailable.
 - Folder icons should be thin, consistent, and legible at 16–20 px.
 - Highlight active folder with a soft translucent pill and restrained accent.
 - Show unread counts as compact badges, not oversized bright bubbles.
@@ -112,6 +113,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Search input at top; compact `All / Unread / Starred` filters.
 - Rows show sender, subject, one-line preview, time, unread marker, and optional star.
 - Use a tinted fill and a soft edge for the selected folder and message. Keep keyboard focus clearly visible in both appearances.
+- In bulk selection mode, show row checkboxes, a selection count, a control to select visible results, and actions for the selection. Changing folders, search, or filters clears the selection.
 - Use a frosted surface for Liquid Glass row actions on hover or keyboard focus, with an opaque fallback for reduced transparency or increased contrast.
 - Unread state must not depend on color alone.
 - Support loading, empty, offline, error, and syncing states without layout jumps.
@@ -131,7 +133,10 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ### Compose
 - Calm, spacious editor; To, Cc/Bcc, Subject, Body, Attachments.
+- Use shared label and input columns sized by the visible labels. Place the copy-fields toggle beside the To input.
 - Autosave drafts, clear send status, safe handling of unsent changes.
+- Confirm successful sending with a brief animated Lusi bird and a quiet chirp. Use a stationary fade when reduced motion is enabled.
+- Use a soft tap for archiving and a lower cue for moving to Trash. A bulk action plays its cue once.
 - Use the same material system but keep the editor surface mostly opaque.
 
 ### Notifications and tray

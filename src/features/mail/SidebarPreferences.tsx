@@ -1,15 +1,19 @@
-import { UserRound } from 'lucide-react';
+import { BriefcaseBusiness, ChevronDown, UserRound } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
+import { demoAccounts, type DemoAccountId } from './demo-accounts';
 
 const closeDelay = 1500;
 
-export function SidebarPreferences({ compact, appearance, children }: {
-  compact: boolean;
+export function SidebarPreferences({ accountId, onSelectAccount, appearance, children }: {
+  accountId: DemoAccountId;
+  onSelectAccount: (accountId: DemoAccountId) => void;
   appearance: ReactNode;
   children: ReactNode;
 }) {
   const labels = useLabels();
+  const account = demoAccounts[accountId];
+  const AccountIcon = accountId === 'work' ? BriefcaseBusiness : UserRound;
   const [expanded, setExpanded] = useState(false);
   const section = useRef<HTMLElement>(null);
   const details = useRef<HTMLDivElement>(null);
@@ -71,9 +75,17 @@ export function SidebarPreferences({ compact, appearance, children }: {
         setExpanded(false);
       }}
     >
-      <div className="account" title={compact ? labels.demoAccount : undefined}>
-        <span className="account-icon" aria-hidden="true"><span className="sidebar-copy">D</span><UserRound className="account-glyph" size={20} /></span>
-        <div className="sidebar-copy"><strong>{labels.demoAccount}</strong><small>{labels.sampleMailbox}</small></div>
+      <div className="account">
+        <span className="account-icon" aria-hidden="true"><span className="sidebar-copy">{account.initials}</span><AccountIcon className="account-glyph" size={20} /></span>
+        <div className="account-copy sidebar-copy" aria-hidden="true"><strong>{labels[account.nameKey]}</strong><small>{account.address}</small></div>
+        <ChevronDown className="account-chevron" size={14} aria-hidden="true" />
+        <select className="account-select" aria-label={labels.selectAccount} title={`${labels.selectAccount} · ${labels[account.nameKey]}`} value={accountId}
+          onChange={(event) => {
+            const next = event.currentTarget.value;
+            if (Object.hasOwn(demoAccounts, next)) onSelectAccount(next as DemoAccountId);
+          }}>
+          {Object.entries(demoAccounts).map(([id, { nameKey }]) => <option key={id} value={id}>{labels[nameKey]}</option>)}
+        </select>
       </div>
       <div className="sidebar-controls">
         {appearance}

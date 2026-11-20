@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { demoAccounts } from '../features/mail/demo-accounts';
 import { makeDraft } from '../features/mail/demo-compose';
 import { demoMessages } from '../features/mail/demo-mail';
 
@@ -81,6 +82,25 @@ describe('sample mailbox', () => {
     expect(within(reader).getByText(/decisions from this morning/)).toBeTruthy();
   });
 
+  it('opens each account’s inbox and keeps mailbox actions and bulk selection scoped', () => {
+    render(<App />);
+    const picker = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Switch account' });
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    expect(picker.value).toBe('personal');
+    fireEvent.click(reader.getByRole('button', { name: 'Archive message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select messages' }));
+    fireEvent.change(picker, { target: { value: 'work' } });
+    expect(picker.selectedOptions[0].text).toBe('Work demo');
+    expect(screen.getByRole('heading', { name: 'Friday launch checklist' })).toBeTruthy();
+    expect(screen.getByText('3 messages')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: /select all/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    fireEvent.change(picker, { target: { value: 'personal' } });
+    expect(screen.queryByRole('button', { name: /dolomites field notes/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    expect(screen.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
+  });
+
   it('shows sample summaries and keeps unavailable summaries collapsed', () => {
     render(<App />);
     const reader = within(screen.getByRole('main', { name: 'Message reader' }));
@@ -106,9 +126,17 @@ describe('sample mailbox', () => {
 
     try {
       render(<App />);
+      const account = screen.getByRole('combobox', { name: 'Switch account' });
+      const selectAccount = (value: string) => fireEvent.change(account, { target: { value } });
+      selectAccount('work');
       const openComposer = () => fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
       openComposer();
       const composer = () => within(screen.getByRole('dialog'));
+      const copies = composer().getByRole('button', { name: 'Cc / Bcc' });
+      fireEvent.click(copies);
+      fireEvent.change(composer().getByLabelText('Cc', { exact: true }), { target: { value: 'copy@example.test' } });
+      fireEvent.click(copies);
+      expect(composer().queryByLabelText('Cc', { exact: true })).toBeNull();
       fireEvent.change(composer().getByLabelText('Subject'), { target: { value: 'Demo attachment test' } });
       const files = [new File(['notes'], 'notes.txt'), new File(['route'], 'route.txt')];
       fireEvent.change(composer().getByLabelText('Attach files'), { target: { files } });
@@ -116,8 +144,13 @@ describe('sample mailbox', () => {
       fireEvent.click(composer().getByRole('button', { name: 'Remove notes.txt' }));
       expect(document.activeElement).toBe(composer().getByRole('button', { name: 'Attach files' }));
       fireEvent.click(composer().getByRole('button', { name: 'Close composer' }));
+      selectAccount('personal');
+      fireEvent.click(screen.getByRole('button', { name: /^Drafts/ }));
+      expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
+      selectAccount('work');
       fireEvent.click(screen.getByRole('button', { name: /^Drafts/ }));
       fireEvent.click(screen.getByRole('button', { name: /demo attachment test/i }));
+      expect(composer().getByLabelText<HTMLInputElement>('Cc', { exact: true }).value).toBe('copy@example.test');
       expect(composer().queryByText('notes.txt')).toBeNull();
       expect(composer().getByText('route.txt')).toBeTruthy();
       fireEvent.click(composer().getByRole('button', { name: 'Send' }));
@@ -127,15 +160,22 @@ describe('sample mailbox', () => {
       expect(composer().getByRole('status').textContent).toMatch(/Sending/);
       act(() => vi.advanceTimersByTime(450));
       expect(composer().getByRole('alert').textContent).toMatch(/failed/);
+      expect(document.querySelector('.send-bird')).toBeNull();
       fireEvent.change(composer().getByLabelText('To'), { target: { value: 'friend@example.test' } });
       fireEvent.click(composer().getByRole('button', { name: 'Send' }));
       act(() => vi.advanceTimersByTime(450));
       expect(screen.queryByRole('dialog')).toBeNull();
+      const bird = document.querySelector('.send-bird');
+      expect(bird?.getAttribute('aria-hidden')).toBe('true');
       expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
       fireEvent.click(within(screen.getByRole('navigation', { name: 'Mail folders' })).getByRole('button', { name: 'Sent' }));
       const sent = screen.getByRole('button', { name: /demo attachment test/i });
       fireEvent.click(sent);
       expect(screen.getByText('route.txt')).toBeTruthy();
+      expect(screen.getAllByText('Work demo').length).toBeGreaterThan(1);
+      selectAccount('personal');
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Mail folders' })).getByRole('button', { name: 'Sent' }));
+      expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
     } finally {
       cleanup();
       if (showModal) Object.defineProperty(prototype, 'showModal', showModal);
@@ -245,11 +285,51 @@ describe('sample mailbox', () => {
     expect(list.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
   });
 
+  it('applies and undoes a bulk archive without opening the selected messages', () => {
+    render(<App />);
+    const list = within(screen.getByRole('region', { name: 'Messages' }));
+    fireEvent.click(list.getByRole('button', { name: 'Select messages' }));
+    const actions = within(list.getByRole('group', { name: 'Bulk actions' }));
+    expect(actions.getByRole<HTMLButtonElement>('button', { name: 'Archive message' }).disabled).toBe(true);
+    fireEvent.click(list.getByRole('checkbox', { name: 'Select Weekend plans' }));
+    fireEvent.click(list.getByRole('checkbox', { name: 'Select Reading recommendations' }));
+    expect(list.getByRole('status').textContent).toBe('2 selected');
+    expect(screen.getByRole('heading', { name: 'Dolomites field notes' })).toBeTruthy();
+    fireEvent.click(actions.getByRole('button', { name: 'Archive message' }));
+    expect(list.queryByRole('group', { name: 'Bulk actions' })).toBeNull();
+    expect(list.queryByRole('button', { name: /Weekend plans/i })).toBeNull();
+    expect(list.queryByRole('button', { name: /Reading recommendations/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(list.getByRole('button', { name: /Weekend plans/i })).toBeTruthy();
+    expect(list.getByRole('button', { name: /Reading recommendations/i })).toBeTruthy();
+  });
+
+  it('clears bulk selection on filter changes and selects only visible results', () => {
+    render(<App />);
+    const list = within(screen.getByRole('region', { name: 'Messages' }));
+    const select = list.getByRole('button', { name: 'Select messages' });
+    fireEvent.click(select);
+    fireEvent.click(list.getByRole('button', { name: 'Select all visible' }));
+    expect(list.getByRole('status').textContent).toBe('6 selected');
+    fireEvent.click(within(list.getByRole('group', { name: 'Filter messages' })).getByRole('button', { name: 'Unread' }));
+    expect(select.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(select);
+    fireEvent.click(list.getByRole('button', { name: 'Select all visible' }));
+    expect(list.getByRole('status').textContent).toBe('4 selected');
+    const actions = within(list.getByRole('group', { name: 'Bulk actions' }));
+    fireEvent.click(actions.getByRole('button', { name: 'Mark as read' }));
+    expect(list.getByText('No messages found')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(list.getAllByRole('listitem')).toHaveLength(4);
+  });
+
   it('uses distinct recipients for Reply all and keeps originals attached when forwarding', () => {
     const message = demoMessages[0];
-    const reply = makeDraft({ mode: 'reply', message });
-    const replyAll = makeDraft({ mode: 'replyAll', message });
-    const forwarded = makeDraft({ mode: 'forward', message });
+    const reply = makeDraft({ mode: 'reply', message }, demoAccounts.personal.address);
+    const replyAll = makeDraft({ mode: 'replyAll', message }, demoAccounts.personal.address);
+    const forwarded = makeDraft({ mode: 'forward', message }, demoAccounts.personal.address);
+    const work = demoAccounts.work;
+    expect(makeDraft({ mode: 'replyAll', message: work.messages.en[0] }, work.address).to).toBe('ada@example.com, deniz@example.com');
     expect(reply.to).toBe(message.address);
     expect(replyAll.to).toBe('mona@example.com, ayla@example.com');
     expect(replyAll.cc).toBe('sam@example.com');
@@ -300,12 +380,17 @@ describe('sample mailbox', () => {
     expect(screen.getByRole('heading', { name: 'Gelen Kutusu' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Dolomitler saha notları' })).toBeTruthy();
     expect(document.documentElement.lang).toBe('tr');
+    const account = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Hesap değiştir' });
+    fireEvent.change(account, { target: { value: 'work' } });
+    expect(account.selectedOptions[0].text).toBe('İş demo hesabı');
+    expect(screen.getByRole('heading', { name: 'Cuma yayını için kontrol listesi' })).toBeTruthy();
 
     revealPreferences('Tercihler');
     const language = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Dil' });
     expect(language.value).toBe('system');
     fireEvent.change(language, { target: { value: 'en' } });
     expect(screen.getByRole('heading', { name: 'Inbox' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Friday launch checklist' })).toBeTruthy();
     expect(document.documentElement.lang).toBe('en');
 
     fireEvent.change(language, { target: { value: 'system' } });

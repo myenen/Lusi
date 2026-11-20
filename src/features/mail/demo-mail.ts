@@ -2,7 +2,7 @@ export type Mailbox = 'inbox' | 'sent' | 'drafts' | 'trash' | 'archive';
 export type Label = 'work' | 'personal' | 'projects' | 'travel';
 export type Folder = Mailbox | Label | 'starred' | 'snoozed';
 export type FixtureId = 'field-notes' | 'trip' | 'notes' | 'welcome' | 'files' | 'books' | 'travel' | 'confirmed' | 'packing' | 'old';
-type MessageId = FixtureId | `demo-${number}`;
+type MessageId = FixtureId | `demo-${number}` | `work-${number}`;
 
 export type DemoAttachment = {
   name: string;
@@ -39,6 +39,17 @@ export interface DemoMessage {
 }
 
 export type DemoMessagePatch = Partial<Pick<DemoMessage, 'folder' | 'unread' | 'starred' | 'snoozedUntil' | 'trashOrigin'>>;
+export type BulkAction = 'archive' | 'trash' | 'restore' | 'read' | 'unread';
+
+export function bulkPatch(message: DemoMessage, action: BulkAction): DemoMessagePatch | undefined {
+  switch (action) {
+    case 'archive': return ['archive', 'trash', 'drafts'].includes(message.folder) ? undefined : { folder: 'archive' };
+    case 'trash': return message.folder === 'trash' ? undefined : { folder: 'trash' };
+    case 'restore': return message.folder === 'trash' ? { folder: message.trashOrigin ?? 'inbox' } : undefined;
+    case 'read': return message.unread ? { unread: false } : undefined;
+    case 'unread': return message.unread ? undefined : { unread: true };
+  }
+}
 
 const ridge = '/demo/dolomites.jpg';
 

@@ -2,7 +2,7 @@ import { Archive, ArrowDownToLine, ArrowLeft, ChevronDown, Clock, FileText, Forw
 import { useEffect, useState, type RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, Toolbar } from '../../components/ui/Controls';
-import { demoAddress, type DemoAttachment, type DemoMessage, type DemoMessagePatch } from './demo-mail';
+import type { DemoAttachment, DemoMessage, DemoMessagePatch } from './demo-mail';
 import type { ReplyMode } from './demo-compose';
 import { AttachmentPreview, downloadAttachment } from './AttachmentPreview';
 
@@ -51,8 +51,9 @@ function AttachmentChip({ attachment, onPreview, onDownload }: { attachment: Dem
   );
 }
 
-export function MessageReader({ message, headingRef, inert, onUpdateMessage, onBack, onReply, onEditDraft }: {
+export function MessageReader({ message, accountAddress, headingRef, inert, onUpdateMessage, onBack, onReply, onEditDraft }: {
   message?: DemoMessage;
+  accountAddress: string;
   headingRef: RefObject<HTMLHeadingElement | null>;
   inert: boolean;
   onUpdateMessage: (id: DemoMessage['id'], patch: DemoMessagePatch, trigger: HTMLButtonElement) => void;
@@ -113,10 +114,10 @@ export function MessageReader({ message, headingRef, inert, onUpdateMessage, onB
                   <div className="sender">
                     <strong>{message.sender}</strong>
                     <details className="recipient-details">
-                      <summary>{message.address === demoAddress ? labels.to : labels.toMe} <ChevronDown size={13} aria-hidden="true" /></summary>
+                      <summary>{message.address === accountAddress ? labels.to : labels.toMe} <ChevronDown size={13} aria-hidden="true" /></summary>
                       <dl>
                         <div><dt>{labels.from}</dt><dd>{message.address}</dd></div>
-                          <div><dt>{labels.to}</dt><dd>{message.to ?? (message.address === demoAddress ? '—' : demoAddress)}</dd></div>
+                          <div><dt>{labels.to}</dt><dd>{message.to ?? (message.address === accountAddress ? '—' : accountAddress)}</dd></div>
                           {message.cc && <div><dt>{labels.cc}</dt><dd>{message.cc}</dd></div>}
                       </dl>
                     </details>

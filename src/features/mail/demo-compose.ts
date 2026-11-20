@@ -1,4 +1,4 @@
-import { demoAddress, type DemoAttachment, type DemoMessage } from './demo-mail';
+import type { DemoAttachment, DemoMessage } from './demo-mail';
 
 export type ReplyMode = 'reply' | 'replyAll' | 'forward';
 export type ComposeTarget = { mode: 'new' } | { mode: ReplyMode | 'edit'; message: DemoMessage };
@@ -25,7 +25,7 @@ export function splitAddresses(value: string) {
   return value.split(/[,;]+/).map((address) => address.trim()).filter(Boolean);
 }
 
-export function makeDraft(target: ComposeTarget): Draft {
+export function makeDraft(target: ComposeTarget, accountAddress: string): Draft {
   if (target.mode === 'new') return emptyDraft;
   const { message, mode } = target;
   if (mode === 'edit') return {
@@ -37,7 +37,7 @@ export function makeDraft(target: ComposeTarget): Draft {
     attachments: message.attachments ?? [],
   };
 
-  const seen = new Set([demoAddress, message.address.toLowerCase()]);
+  const seen = new Set([accountAddress.toLowerCase(), message.address.toLowerCase()]);
   const otherRecipients = (value = '') => splitAddresses(value).filter((address) => {
     const key = address.toLowerCase();
     if (seen.has(key)) return false;
@@ -49,10 +49,10 @@ export function makeDraft(target: ComposeTarget): Draft {
   return { ...emptyDraft, to, cc, subject: `Re: ${message.subject}` };
 }
 
-export function draftMessage({ id, draft, updatedAt }: SavedDraft, folder: 'sent' | 'drafts', sender: string, untitled: string, locale: string): DemoMessage {
+export function draftMessage({ id, draft, updatedAt }: SavedDraft, folder: 'sent' | 'drafts', account: { name: string; address: string; initials: string }, untitled: string, locale: string): DemoMessage {
   return {
-    id, folder, sender, address: demoAddress, to: draft.to, cc: draft.cc, subject: draft.subject.trim() || untitled,
+    id, folder, sender: account.name, address: account.address, to: draft.to, cc: draft.cc, subject: draft.subject.trim() || untitled,
     body: draft.body.trim() ? draft.body.split(/\n\n+/) : [], date: new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'short' }).format(updatedAt),
-    sentAt: updatedAt, initials: 'D', tone: 'blue', attachments: draft.attachments,
+    sentAt: updatedAt, initials: account.initials, tone: 'blue', attachments: draft.attachments,
   };
 }

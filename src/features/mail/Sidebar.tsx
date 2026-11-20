@@ -2,6 +2,7 @@ import { Archive, BriefcaseBusiness, Clock, FilePenLine, FolderKanban, Inbox, Pa
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
+import type { DemoAccountId } from './demo-accounts';
 import { isInFolder, type DemoMessage, type Folder } from './demo-mail';
 import { SidebarPreferences } from './SidebarPreferences';
 
@@ -41,12 +42,14 @@ function FolderLinks({ entries, messages, selected, tooltips, onSelect }: { entr
   });
 }
 
-export function Sidebar({ folder, messages, open, collapsed, canToggle, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
+export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
   folder: Folder;
   messages: DemoMessage[];
   open: boolean;
   collapsed: boolean;
   canToggle: boolean;
+  accountId: DemoAccountId;
+  onSelectAccount: (accountId: DemoAccountId) => void;
   onToggle: () => void;
   onClose: () => void;
   onSelect: (folder: Folder) => void;
@@ -96,7 +99,7 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, onToggle
           <FolderLinks entries={customFolders} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
         </nav>
       </div>
-      <SidebarPreferences compact={tooltips} appearance={appearance}>
+      <SidebarPreferences accountId={accountId} onSelectAccount={onSelectAccount} appearance={appearance}>
         {controls}
       </SidebarPreferences>
       {divider}
