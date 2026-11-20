@@ -67,7 +67,7 @@ jobs:
           hdiutil attach "${dmg[0]}" -readonly -nobrowse -mountpoint "$mount"
           trap 'hdiutil detach "$mount"' EXIT
           app="$mount/Lusi.app/Contents/MacOS/lusi"
-          lipo -verify_arch arm64 x86_64 "$app"
+          lipo "$app" -verify_arch arm64 x86_64
           "$app" &
           pid=$!
           sleep 5
