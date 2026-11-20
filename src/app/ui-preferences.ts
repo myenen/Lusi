@@ -19,7 +19,7 @@ export const paneLimits = {
   listWidth: { min: 290, max: 444 },
 };
 
-const defaults: Preferences = { theme: 'system', themeId: defaultThemeId, language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 };
+const defaults: Preferences = { theme: 'light', themeId: defaultThemeId, language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 };
 
 interface LoadedPreferences { preferences: Preferences; systemLocale: string | null; }
 type PreferenceError = 'load' | 'save';

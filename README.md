@@ -8,7 +8,7 @@ Just as a little bird carries its song across the distance, Lusi helps your mess
 
 No unnecessary noise. No complexity. Just your messages, beautifully presented.
 
-Lusi is a lightweight, privacy-focused desktop mail client in development. Preview builds target macOS, Windows, and Linux and use a sample mailbox you can explore without adding an account.
+Lusi is a lightweight, privacy-focused desktop mail client in development.
 
 ## Download the test build
 
@@ -24,25 +24,19 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 
 ## What works today
 
-- Three resizable panes, with a collapsible icon rail on desktop and a folder drawer and list-to-reader view in narrow windows.
-- Switch between two demo accounts from the account picker at the bottom of the sidebar. Each account keeps its own messages, drafts, and sent mail during the session.
-- Search the current folder or all mail, sort by date, and filter by unread, starred, or attached files.
-- Select messages individually or select all visible results. Archive, move to Trash, restore, or change read status in bulk. Undo reverses the whole batch.
-- Archive or move messages to Trash, undo the last move, and restore messages from Trash. Snooze a message for one hour or until 09:00 the next day, then use the Snoozed folder to end a snooze early.
-- The reader displays plain text, previews supported image and text attachments, and shows a collapsible Smart Summary card with sample content and loading, unavailable, and error states.
-- Compose, reply, reply all, and forward in the sample mailbox. Drafts appear in Drafts when edited and retain local attachments. Demo send validates recipients and moves the message to Sent. Use `fail@example.test` to try the failure state. Drafts and mailbox changes last until the window is reloaded.
+- When no account is connected, Lusi opens the account setup screen in light Liquid Glass.
+- Three resizable panes, a collapsible sidebar, and a folder drawer on narrow windows.
+- Read-only IMAP folders, message search by sender and subject, sorting, and an unread filter.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
 - Open Settings with the gear in the upper-right corner. The drawer contains the Account Center and system settings for appearance, theme, and language. The sidebar also provides quick access to system, light, and dark appearance.
 - Turkish and English. The interface follows the system language by default, with English as the fallback.
 
-Real account setup, sending, sync, and notifications are planned.
+### Connect a real mailbox
 
-## Screenshots
+In the desktop build, start with your email address. Lusi looks for the domain’s `_imaps._tcp` DNS SRV record. If discovery returns usable settings, confirm the server details and enter your IMAP password or app password. Otherwise, enter the hostname and implicit TLS port from your provider (usually 993). The full email address is the IMAP login. Linux needs an available Secret Service keyring.
 
-![Lusi in light mode with the folder sidebar, message list, and an open sample email](docs/screenshots/lusi-light.jpg)
-
-[View dark mode](docs/screenshots/lusi-dark.jpg)
+Lusi currently supports a single read-only IMAP account. The sidebar shows selectable folders discovered with IMAP LIST. Lusi caches up to 50 recent Inbox headers for startup and offline listing. Other folders load up to 50 recent headers as you open them. Open a message to read its text (up to 1 MiB). SMTP, OAuth sign-in, background sync, and notifications are planned.
 
 ## Preview in a browser first
 
@@ -55,7 +49,7 @@ npm ci
 npm run dev -- --port 1421
 ```
 
-Open [the local HTML preview](http://127.0.0.1:1421/). It runs the interactive Lusi interface with two sample mailboxes. Desktop-specific behavior can be verified in Tauri after the interface review.
+Open [the local HTML preview](http://127.0.0.1:1421/). It shows the account setup interface. Mail and folder access require the desktop build.
 
 ## Run the desktop development build
 

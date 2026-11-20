@@ -59,6 +59,47 @@
   backdrop-filter: var(--navigation-filter);
 }
 
+.account-setup {
+  display: grid;
+  height: 100%;
+  padding: calc(var(--window-control-height) + 18px) 18px 18px;
+  overflow: auto;
+}
+.account-setup .window-drag-area { width: calc(100% - 88px); }
+.account-setup-card {
+  display: grid;
+  gap: 18px;
+  width: min(100%, 420px);
+  margin: auto;
+  padding: clamp(20px, 4vw, 32px);
+  border: 1px solid var(--edge);
+  border-radius: calc(var(--radius-panel) + 8px);
+  box-shadow: var(--dialog-shadow);
+}
+.account-setup-brand { display: flex; align-items: center; gap: 5px; font-size: 1.3rem; font-weight: 750; letter-spacing: -.05em; }
+.account-setup-heading h1 { font-size: clamp(1.5rem, 4vw, 1.9rem); font-weight: 750; letter-spacing: -.04em; }
+.account-setup-heading p { margin-top: 5px; color: var(--muted); font-size: .875rem; }
+.account-setup-form, .account-setup-review { display: grid; gap: 12px; }
+.account-setup-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(72px, .35fr); gap: 12px; min-width: 0; }
+.account-setup-form label { display: grid; gap: 5px; font-size: .8125rem; font-weight: 650; }
+.account-setup-form input:not([type="checkbox"]) {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 11px;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-control);
+  background: var(--floating);
+  font-weight: 500;
+}
+.account-setup-form .account-setup-confirmation { grid-template-columns: auto 1fr; align-items: start; gap: 8px; }
+.account-setup-confirmation input { margin-top: 3px; accent-color: var(--accent); }
+.account-setup-form .compose-button { justify-content: space-between; margin-top: 2px; }
+.account-setup-review { padding: 12px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--control); font-size: .875rem; overflow-wrap: anywhere; }
+.account-setup-review .text-button { display: inline-flex; align-items: center; gap: 5px; justify-self: start; }
+.account-setup-footer { padding-top: 13px; border-top: 1px solid var(--divider); text-align: center; }
+.account-setup-hint { color: var(--muted); font-size: .8125rem; }
+.account-setup-error { font-size: .875rem; color: var(--ink); padding: 9px 10px; border-radius: var(--radius-control); border: 1px solid var(--divider); background: var(--control); }
+
 .sidebar, .mail-list {
   position: relative;
   min-width: 0;
@@ -116,6 +157,7 @@
 }
 
 .folder-link svg { flex: none; color: var(--muted); }
+.folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-link:hover { background: var(--hover); }
 .folder-link[aria-current] { background: var(--selected); border-color: var(--selected-edge); box-shadow: var(--surface-shadow); color: var(--accent); font-weight: 700; }
 .folder-link[aria-current] svg { color: currentColor; }
@@ -123,7 +165,7 @@
 .folder-heading { color: var(--muted); font-size: .75rem; font-weight: 650; margin: 10px 1px 3px; padding: 12px 8px 2px; border-top: 1px solid var(--divider); }
 
 .account { position: relative; padding: 3px; border-radius: var(--radius-control); font-size: .8125rem; }
-.account:hover { background: var(--hover); }
+.account:not([data-static]):hover { background: var(--hover); }
 .account:has(.account-select:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
 .account-copy { flex: 1; min-width: 0; }
 .account :is(strong, small) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -219,22 +261,22 @@
 
 .segmented-filter {
   --filter-index: 0;
+  --filter-count: 2;
   --filter-direction: 1;
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--filter-count), minmax(0, 1fr));
   padding: 3px;
 }
 .segmented-filter[data-value="unread"] { --filter-index: 1; }
-.segmented-filter[data-value="starred"] { --filter-index: 2; }
 .segmented-filter:dir(rtl) { --filter-direction: -1; }
 .segmented-filter::before {
   position: absolute;
   z-index: -1;
   inset-block: 3px;
   inset-inline-start: 3px;
-  width: calc((100% - 6px) / 3);
+  width: calc((100% - 6px) / var(--filter-count));
   border-radius: var(--radius-action);
   background: var(--filter-thumb-background);
   box-shadow: var(--filter-thumb-shadow);
@@ -367,6 +409,8 @@
 .letter-summary p { max-width: 84ch; margin-block-start: 7px; color: var(--ink); font-size: .8125rem; line-height: 1.55; }
 .letter-body { display: grid; gap: 12px; padding-block: 20px; font-size: .9375rem; line-height: 1.62; white-space: pre-line; overflow-wrap: anywhere; }
 .letter-body p { max-width: 84ch; }
+.sender-address, .mailbox-status { color: var(--muted); font-size: .8125rem; overflow-wrap: anywhere; }
+.sender-address { display: block; }
 .letter-image { display: block; width: 100%; aspect-ratio: 2.85; object-fit: cover; border: 1px solid var(--divider); border-radius: var(--radius-panel); background: var(--window); }
 .letter-image-button { display: block; width: 100%; border-radius: var(--radius-panel); }
 .workspace .letter-image-button:not(:disabled) { cursor: zoom-in; }
@@ -454,7 +498,8 @@
 .settings-section :is(legend, h3) svg { color: var(--accent); }
 .settings-accounts { display: grid; gap: 6px; }
 .settings-account { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--divider); border-radius: var(--radius-control); background: var(--control); cursor: pointer; }
-.settings-account:hover { background: var(--hover); }
+.settings-account[data-static] { cursor: default; }
+.settings-account:not([data-static]):hover { background: var(--hover); }
 .settings-account:has(:checked) { border-color: var(--selected-edge); background: var(--selected); }
 .settings-account .account-copy { overflow-wrap: anywhere; }
 .settings-account strong, .settings-account small { display: block; }

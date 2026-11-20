@@ -8,7 +8,28 @@ description = "A desktop mail client"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
+base64 = "0.22"
+futures-util = "0.3"
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+log = { version = "0.4", features = ["max_level_debug"] }
+mail-parser = "1"
+native-tls = "0.2"
+rand = "0.10"
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3.2"
 tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["net", "sync", "time"] }
+tokio-native-tls = "0.3"
+zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }

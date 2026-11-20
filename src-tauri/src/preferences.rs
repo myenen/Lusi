@@ -9,8 +9,8 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Appearance {
-    #[default]
     System,
+    #[default]
     Light,
     Dark,
 }
@@ -38,7 +38,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            theme: Appearance::System,
+            theme: Appearance::default(),
             theme_id: "default".into(),
             language: Language::System,
             sidebar_collapsed: false,
@@ -135,6 +135,15 @@ pub fn save_ui_preferences(app: AppHandle, preferences: Preferences) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_preferences_default_to_light_liquid_glass() -> Result<(), serde_json::Error> {
+        let preferences: Preferences = serde_json::from_str("{}")?;
+        assert_eq!(preferences.theme, Appearance::Light);
+        assert_eq!(preferences.theme_id, "default");
+        assert_eq!(preferences.language, Language::System);
+        Ok(())
+    }
 
     #[test]
     fn bounds_deserialized_widths_and_preserves_theme() -> Result<(), serde_json::Error> {

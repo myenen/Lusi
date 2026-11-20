@@ -33,6 +33,11 @@
           "permissions": ["allow-load-ui-preferences", "allow-save-ui-preferences"]
         },
         {
+          "identifier": "mail-account",
+          "windows": ["main"],
+          "permissions": ["allow-load-connected-inbox", "allow-discover-imap-settings", "allow-check-imap-settings", "allow-connect-imap-account", "allow-refresh-connected-inbox", "allow-list-connected-folders", "allow-read-connected-folder", "allow-read-connected-message"]
+        },
+        {
           "identifier": "macos-titlebar",
           "platforms": ["macOS"],
           "windows": ["main"],

@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Settings2, UserRound, X } from 'lucide-react';
+import { Settings2, UserRound, X } from 'lucide-react';
 import { useLayoutEffect, useRef } from 'react';
 import { useLabels } from '../../app/i18n';
 import { LanguageSelect } from '../../app/LanguageSelect';
@@ -6,11 +6,10 @@ import { ThemePresetSelect } from '../../app/ThemePresetSelect';
 import { ThemeSelect } from '../../app/ThemeSelect';
 import type { Preferences } from '../../app/ui-preferences';
 import { IconButton } from '../../components/ui/Controls';
-import { demoAccounts, type DemoAccountId } from '../mail/demo-accounts';
+import { ConnectedAccount } from '../mail/SidebarAccount';
 
-export function SettingsDrawer({ accountId, onSelectAccount, preferences, themeId, onUpdate, onClose }: {
-  accountId: DemoAccountId;
-  onSelectAccount: (id: DemoAccountId) => void;
+export function SettingsDrawer({ connectedEmail, preferences, themeId, onUpdate, onClose }: {
+  connectedEmail: string;
   preferences: Preferences;
   themeId: string;
   onUpdate: (patch: Partial<Preferences>) => void;
@@ -45,18 +44,7 @@ export function SettingsDrawer({ accountId, onSelectAccount, preferences, themeI
           <fieldset className="settings-section">
             <legend><UserRound size={17} aria-hidden="true" />{labels.accountCenter}</legend>
             <div className="settings-accounts">
-              {Object.entries(demoAccounts).map(([id, account]) => {
-                const AccountIcon = id === 'work' ? BriefcaseBusiness : UserRound;
-                return <label key={id} className="settings-account">
-                  <span className="account-icon"><AccountIcon size={17} aria-hidden="true" /></span>
-                  <span className="account-copy">
-                    <strong>{labels[account.nameKey]}</strong>
-                    <small>{account.address}</small>
-                  </span>
-                  <input type="radio" name="settings-account" checked={id === accountId}
-                    onChange={() => onSelectAccount(id as DemoAccountId)} />
-                </label>;
-              })}
+              <ConnectedAccount email={connectedEmail} inSettings />
             </div>
           </fieldset>
           <section className="settings-section" aria-labelledby="system-settings-title">

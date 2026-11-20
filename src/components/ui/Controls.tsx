@@ -16,9 +16,9 @@ export function Toolbar({ label, children, className = '' }: { label: string; ch
   return <div role="group" aria-label={label} className={`toolbar ${className}`}>{children}</div>;
 }
 
-export type Filter = 'all' | 'unread' | 'starred';
+export type Filter = 'all' | 'unread';
 
-const filters: Filter[] = ['all', 'unread', 'starred'];
+const filters: Filter[] = ['all', 'unread'];
 
 export function SegmentedFilter({ value, onChange }: { value: Filter; onChange: (filter: Filter) => void }) {
   const labels = useLabels();

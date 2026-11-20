@@ -1,61 +1,28 @@
-import { Archive, BriefcaseBusiness, Clock, FilePenLine, FolderKanban, Inbox, PanelLeftClose, PanelLeftOpen, PenLine, Plane, Send, Star, Trash2, UserRound, X, type LucideIcon } from 'lucide-react';
+import { Archive, FilePenLine, Folder, Inbox, Mail, PanelLeftClose, PanelLeftOpen, Send, ShieldAlert, Star, Trash2, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
-import type { DemoAccountId } from './demo-accounts';
-import { isInFolder, type DemoMessage, type Folder } from './demo-mail';
-import { SidebarAccount } from './SidebarAccount';
+import type { FolderKind, MailFolder } from '../accounts/imap-api';
+import { folderDisplayName } from './connected-mail';
 
-interface FolderEntry { id: Folder; icon: LucideIcon; count?: 'unread' | 'all'; }
+const folderIcons: Record<FolderKind, LucideIcon> = {
+  inbox: Inbox, sent: Send, drafts: FilePenLine, archive: Archive, trash: Trash2,
+  junk: ShieldAlert, all: Mail, flagged: Star, custom: Folder,
+};
 
-const mailboxes: FolderEntry[] = [
-  { id: 'inbox', icon: Inbox, count: 'unread' },
-  { id: 'starred', icon: Star },
-  { id: 'sent', icon: Send },
-  { id: 'drafts', icon: FilePenLine, count: 'all' },
-  { id: 'trash', icon: Trash2 },
-  { id: 'archive', icon: Archive },
-  { id: 'snoozed', icon: Clock, count: 'all' },
-];
-
-const customFolders: FolderEntry[] = [
-  { id: 'work', icon: BriefcaseBusiness, count: 'unread' },
-  { id: 'personal', icon: UserRound },
-  { id: 'projects', icon: FolderKanban },
-  { id: 'travel', icon: Plane },
-];
-
-function FolderLinks({ entries, messages, selected, tooltips, onSelect }: { entries: FolderEntry[]; messages: DemoMessage[]; selected: Folder; tooltips: boolean; onSelect: (folder: Folder) => void }) {
-  const labels = useLabels();
-  return entries.map(({ id, icon: Icon, count }) => {
-    const label = labels.folders[id];
-    const total = count ? messages.filter((message) => isInFolder(message, id) && (count === 'all' || message.unread)).length : 0;
-    const countLabel = count === 'unread' ? labels.unreadCount(total) : labels.messageCount(total);
-
-    return (
-      <button key={id} type="button" className="folder-link" data-folder={id} title={tooltips ? label : undefined} aria-current={id === selected ? 'page' : undefined} onClick={() => onSelect(id)}>
-        <Icon size={17} aria-hidden="true" />
-        <span className="sidebar-copy">{label}</span>
-        {total > 0 && <span className="folder-count sidebar-copy" aria-label={countLabel}>{total}</span>}
-      </button>
-    );
-  });
-}
-
-export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, appearance, divider }: {
-  folder: Folder;
-  messages: DemoMessage[];
+export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account, onToggle, onClose, onSelect, appearance, divider, status }: {
+  folder: string;
+  folders: MailFolder[];
+  inboxUnread: number;
   open: boolean;
   collapsed: boolean;
-  canToggle: boolean;
-  accountId: DemoAccountId;
-  onSelectAccount: (accountId: DemoAccountId) => void;
+  account: ReactNode;
   onToggle: () => void;
   onClose: () => void;
-  onSelect: (folder: Folder) => void;
-  onCompose: () => void;
+  onSelect: (folder: string) => void;
   appearance: ReactNode;
   divider: ReactNode;
+  status?: ReactNode;
 }) {
   const labels = useLabels();
   const close = useRef<HTMLButtonElement>(null);
@@ -84,22 +51,27 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, accountI
             icon={collapsed ? PanelLeftOpen : PanelLeftClose}
             aria-controls="sidebar"
             aria-expanded={!collapsed}
-            disabled={!canToggle}
             onClick={onToggle}
           />
           {open && <IconButton ref={close} className="drawer-close" label={labels.closeFolders} icon={X} onClick={onClose} />}
         </div>
-        <button type="button" className="compose-button" title={tooltips ? labels.compose : undefined} onClick={onCompose}>
-          <PenLine size={17} aria-hidden="true" /><span className="sidebar-copy">{labels.compose}</span>
-        </button>
         <nav className="mailboxes" aria-label={labels.mailFolders}>
-          <FolderLinks entries={mailboxes} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
-          <h2 className="folder-heading"><span className="sidebar-copy">{labels.folderHeading}</span></h2>
-          <FolderLinks entries={customFolders} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
+          {folders.map((entry) => {
+            const label = folderDisplayName(entry, labels);
+            const Icon = folderIcons[entry.kind];
+            return <button key={entry.id} type="button" className="folder-link" data-folder={entry.kind}
+              title={tooltips || entry.kind === 'custom' ? label : undefined} aria-current={entry.id === folder ? 'page' : undefined}
+              onClick={() => onSelect(entry.id)}>
+              <Icon size={17} aria-hidden="true" />
+              <span className="sidebar-copy folder-name">{label}</span>
+              {entry.kind === 'inbox' && inboxUnread > 0 && <span className="folder-count sidebar-copy" aria-label={labels.unreadCount(inboxUnread)}>{inboxUnread}</span>}
+            </button>;
+          })}
         </nav>
+        {status}
       </div>
       <div className="sidebar-bottom">
-        <SidebarAccount accountId={accountId} onSelectAccount={onSelectAccount} />
+        {account}
         {appearance}
       </div>
       {divider}

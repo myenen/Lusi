@@ -1,9 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import { demoAccounts } from '../features/mail/demo-accounts';
-import { makeDraft } from '../features/mail/demo-compose';
-import { demoMessages } from '../features/mail/demo-mail';
 
 const dialogPrototype = HTMLDialogElement.prototype;
 const originalDialogMethods = Object.getOwnPropertyDescriptors(dialogPrototype);
@@ -34,463 +31,267 @@ function openSettings(name = 'Settings') {
   return screen.getByRole('dialog', { name });
 }
 
-describe('sample mailbox', () => {
-  it.each([
-    { reducedMotion: false, panes: ['sidebar', 'mail-list', 'reader'] },
-    { reducedMotion: false, panes: ['mail-list', 'reader'] },
-    { reducedMotion: true, panes: ['sidebar', 'mail-list', 'reader'] },
-  ])('uses the same reveal at startup and for theme changes ($reducedMotion, $panes)', ({ reducedMotion, panes }) => {
+describe('account setup', () => {
+  it('starts in light Liquid Glass even on a dark system', () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
-      matches: query === '(prefers-reduced-motion: no-preference)' && !reducedMotion,
+      matches: query === '(prefers-color-scheme: dark)',
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     }));
-    const starts: [string, number, KeyframeAnimationOptions['duration']][] = [];
-    const cancel = vi.fn();
-    const animate = function (this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
-      expect(keyframes.map(({ maskPosition }) => maskPosition)).toEqual(['50% 100%', '50% 0%']);
-      expect(keyframes.map(({ filter }) => filter)).toEqual(['blur(6px)', 'blur(0px)']);
-      starts.push([this.classList[0], options.delay ?? 0, options.duration]);
-      return { cancel };
-    };
-    const originalAnimate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');
-    Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: animate });
-    const visibleRects = [new DOMRect()];
-    vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (this: Element) {
-      return (panes.includes(this.classList[0]) ? visibleRects : []) as unknown as DOMRectList;
-    });
+    const { unmount } = render(<App />);
+    const setup = screen.getByRole('heading', { name: 'Set up your email' });
+    const workspace = setup.closest('.workspace');
+    expect(workspace?.getAttribute('data-color-scheme')).toBe('light');
+    expect(workspace?.getAttribute('data-theme-id')).toBe('default');
+    expect(screen.queryByRole('heading', { name: 'Inbox' })).toBeNull();
+    fireEvent.keyDown(window, { key: 'n', metaKey: true });
+    expect(screen.queryByRole('dialog')).toBeNull();
 
+    expect(screen.queryByRole('button', { name: /demo inbox/i })).toBeNull();
+    unmount();
+    render(<App />);
+    expect(screen.getByRole('heading', { name: 'Set up your email' })).toBeTruthy();
+  });
+
+  it('uses only an email address on the first screen and leaves credentials disabled in the browser', () => {
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['tr-TR']);
+    render(<App />);
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+    const email = screen.getByLabelText<HTMLInputElement>('E-posta adresi');
+    expect(email.checkValidity()).toBe(false);
+    fireEvent.change(email, { target: { value: 'mail@example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Devam et' }));
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Posta kutunu bağla' }));
+    expect(screen.getByText('mail@example.test')).toBeTruthy();
+    expect(screen.queryByLabelText('Şifre veya uygulama şifresi')).toBeNull();
+    fireEvent.change(screen.getByLabelText('IMAP sunucusu'), { target: { value: 'imap.example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Devam et' }));
+    expect(screen.getByLabelText<HTMLInputElement>('Şifre veya uygulama şifresi').disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Hesabı bağla' }).disabled).toBe(true);
+    expect(screen.queryByRole('heading', { name: 'Gelen Kutusu' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Sunucu ayarlarını düzenle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hesap bilgilerini düzenle' }));
+    expect(screen.getByLabelText<HTMLInputElement>('E-posta adresi').value).toBe('mail@example.test');
+  });
+
+  it('connects through desktop commands, reads text on demand and reopens the saved inbox', async () => {
+    const key = { uidValidity: 20, uid: 17 };
+    const inbox = { email: 'mail@example.test', headers: [
+      { key, sender: 'Sample sender', address: 'sender@example.test', subject: 'Real inbox example', sentAt: null, unread: true },
+    ] };
+    let connected = false;
+    const invoke = vi.fn(async (command: string) => {
+      switch (command) {
+        case 'load_ui_preferences':
+          return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
+        case 'load_connected_inbox': return connected ? inbox : null;
+        case 'list_connected_folders': return [];
+        case 'discover_imap_settings': return null;
+        case 'check_imap_settings': return undefined;
+        case 'connect_imap_account': connected = true; return inbox;
+        case 'read_connected_message': return '<img src="https://example.test/pixel"> Hello.';
+        case 'refresh_connected_inbox': throw 'network';
+        default: throw new Error('Unexpected Tauri command');
+      }
+    });
+    vi.stubGlobal('isTauri', true);
+    vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
+    const first = render(<App />);
+    fireEvent.change(await screen.findByLabelText('Email address'), { target: { value: inbox.email } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(await screen.findByLabelText('IMAP server'), { target: { value: 'imap.example.test' } });
+    expect(invoke).toHaveBeenCalledWith('discover_imap_settings', { email: inbox.email }, undefined);
+    expect(screen.getByText(/couldn’t find your IMAP settings/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(await screen.findByLabelText('Password or app password'), { target: { value: 'fixture-only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect account' }));
+    expect(invoke).toHaveBeenCalledWith('connect_imap_account', {
+      account: { email: inbox.email, host: 'imap.example.test', port: 993 }, password: 'fixture-only',
+    }, undefined);
+    await screen.findByRole('button', { name: /Real inbox example/ });
+    const sidebar = within(screen.getByRole('complementary', { name: 'Sidebar' }));
+    const list = within(screen.getByRole('region', { name: 'Messages' }));
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    expect(sidebar.getByText(inbox.email)).toBeTruthy();
+    expect(sidebar.queryByRole('button', { name: 'Compose' })).toBeNull();
+    expect(list.queryByRole('button', { name: 'Select messages' })).toBeNull();
+    expect(invoke).not.toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX', key }, undefined);
+    fireEvent.change(list.getByRole('searchbox'), { target: { value: 'unrelated' } });
+    expect(list.queryByRole('button', { name: /Real inbox example/ })).toBeNull();
+    fireEvent.change(list.getByRole('searchbox'), { target: { value: 'sample sender' } });
+    expect(list.getByRole('button', { name: /Real inbox example/ })).toBeTruthy();
+    fireEvent.click(list.getByRole('button', { name: /Real inbox example/ }));
+    expect(await screen.findByText(/Hello\./)).toBeTruthy();
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(reader.queryByRole('button', { name: 'Archive message' })).toBeNull();
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX', key }, undefined);
+    fireEvent.keyDown(window, { key: 'n', metaKey: true });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const settings = within(openSettings());
+    expect(settings.getByText(inbox.email)).toBeTruthy();
+    expect(settings.queryByText('Work demo')).toBeNull();
+    fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh messages' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Real inbox example/ })).toBeTruthy();
+    first.unmount();
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Inbox' })).toBeTruthy();
+  });
+
+  it.each([false, true])('uses discovered TLS settings and falls back after a connection error (confirmation %s)', async (needsConfirmation) => {
+    const host = needsConfirmation ? 'imap.host.example' : 'imap.example.test';
+    const invoke = vi.fn(async (command: string) => {
+      switch (command) {
+        case 'load_ui_preferences':
+          return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
+        case 'load_connected_inbox': return null;
+        case 'discover_imap_settings': return { host, port: 1993, needsConfirmation };
+        case 'connect_imap_account': throw 'tls';
+        default: throw new Error('Unexpected Tauri command');
+      }
+    });
+    vi.stubGlobal('isTauri', true);
+    vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Email address'), { target: { value: 'mail@example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    const password = await screen.findByLabelText<HTMLInputElement>('Password or app password');
+    expect(screen.getByText(`${host}:1993`)).toBeTruthy();
+    expect(screen.queryByLabelText('IMAP server')).toBeNull();
+    expect(password.disabled).toBe(needsConfirmation);
+    if (needsConfirmation) {
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Connect account' }).disabled).toBe(true);
+      fireEvent.click(screen.getByRole('checkbox', { name: /verified the hostname and port/ }));
+    }
+    expect(password.disabled).toBe(false);
+    fireEvent.change(password, { target: { value: 'fixture-only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect account' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>('IMAP server').value).toBe(host);
+    expect(screen.getByLabelText<HTMLInputElement>('TLS port').value).toBe('1993');
+    expect(screen.queryByLabelText('Password or app password')).toBeNull();
+  });
+});
+
+const fixtureKey = { uidValidity: 20, uid: 17 };
+const fixtureHeader = { key: fixtureKey, sender: 'Sample sender', address: 'sender@example.test', subject: 'Inbox message', sentAt: null, unread: true };
+
+function mockMailbox() {
+  const invoke = vi.fn(async (command: string, args: { folder?: string }): Promise<unknown> => {
+    switch (command) {
+      case 'load_ui_preferences':
+        return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
+      case 'load_connected_inbox':
+      case 'refresh_connected_inbox':
+        return { email: 'mail@example.test', headers: [fixtureHeader] };
+      case 'list_connected_folders':
+        return [
+          { id: 'INBOX', name: 'Inbox', kind: 'inbox' },
+          { id: 'INBOX.Outgoing', name: 'INBOX.Outgoing', kind: 'sent' },
+          { id: 'INBOX.Arşiv', name: 'INBOX.Arşiv', kind: 'archive' },
+          { id: 'INBOX.İş', name: 'INBOX.İş', kind: 'custom' },
+        ];
+      case 'read_connected_folder': return [{ ...fixtureHeader, subject: args.folder === 'INBOX.Outgoing' ? 'Sent message' : 'Archived message' }];
+      case 'read_connected_message': return args.folder === 'INBOX.Outgoing' ? 'Sent body' : 'Inbox body';
+      default: throw new Error('Unexpected Tauri command');
+    }
+  });
+  vi.stubGlobal('isTauri', true);
+  vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
+  return invoke;
+}
+
+describe('connected mailbox', () => {
+  it('reveals the sidebar, list and reader on startup', async () => {
+    mockMailbox();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(prefers-reduced-motion: no-preference)', addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }));
+    vi.spyOn(Element.prototype, 'getClientRects').mockReturnValue([new DOMRect()] as unknown as DOMRectList);
+    const panes: string[] = [];
+    const animate = Object.getOwnPropertyDescriptor(Element.prototype, 'animate');
+    Object.defineProperty(Element.prototype, 'animate', {
+      configurable: true,
+      value(this: Element) { panes.push(this.classList[0]); return { cancel: vi.fn() }; },
+    });
     try {
       render(<App />);
-      const startup = starts.slice();
-      expect(startup.map(([pane]) => pane)).toEqual(reducedMotion ? [] : panes);
-      startup.forEach(([, delay, duration], index) => {
-        expect(duration).toBeGreaterThan(0);
-        if (index === 0) expect(delay).toBe(0);
-        else expect(delay).toBeGreaterThan(startup[index - 1][1]);
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
-      expect(starts).toEqual(startup);
-
-      const sidebar = within(screen.getByRole('complementary', { name: 'Sidebar' }));
-      const light = sidebar.getByRole<HTMLInputElement>('radio', { name: 'Light' });
-      fireEvent.click(light);
-      expect(light.checked).toBe(true);
-      expect(starts).toEqual(startup);
-
-      const settings = within(openSettings());
-      fireEvent.change(settings.getByRole('combobox', { name: 'Theme' }), { target: { value: 'flat' } });
-      expect(starts).toEqual([...startup, ...startup]);
-      expect(cancel).toHaveBeenCalledTimes(startup.length);
-
-      fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
-      expect(starts).toEqual([...startup, ...startup, ...startup]);
-      expect(cancel).toHaveBeenCalledTimes(startup.length * 2);
+      await screen.findByRole('heading', { name: 'Inbox' });
+      expect(panes).toEqual(['sidebar', 'mail-list', 'reader']);
     } finally {
-      if (originalAnimate) Object.defineProperty(Element.prototype, 'animate', originalAnimate);
+      if (animate) Object.defineProperty(Element.prototype, 'animate', animate);
       else Reflect.deleteProperty(Element.prototype, 'animate');
     }
   });
 
-  it('selects a message and displays its plain text', () => {
+  it('shows the server folders and scopes the opened message to its folder', async () => {
+    const invoke = mockMailbox();
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /notes from our design review/i }));
-
-    const reader = screen.getByRole('main', { name: 'Message reader' });
-    expect(within(reader).getByRole('heading', { name: 'Notes from our design review' })).toBeTruthy();
-    expect(within(reader).getByText(/decisions from this morning/)).toBeTruthy();
+    const nav = within(await screen.findByRole('navigation', { name: 'Mail folders' }));
+    expect(await nav.findByRole('button', { name: 'Archive' })).toBeTruthy();
+    expect(nav.getByRole('button', { name: 'INBOX.İş' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /Inbox message/ }));
+    expect(await screen.findByText('Inbox body')).toBeTruthy();
+    fireEvent.click(nav.getByRole('button', { name: 'Sent' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Sent message/ }));
+    expect(await screen.findByText('Sent body')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('read_connected_folder', { folder: 'INBOX.Outgoing' }, undefined);
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX.Outgoing', key: fixtureKey }, undefined);
+    expect(screen.queryByText('Inbox body')).toBeNull();
+    fireEvent.click(nav.getByRole('button', { name: /^Inbox/ }));
+    expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();
   });
 
-  it('opens each account’s inbox and keeps mailbox actions and bulk selection scoped', () => {
+  it('keeps appearance synchronized and restores settings focus on dismissal', async () => {
+    mockMailbox();
     render(<App />);
-    const picker = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Switch account' });
-    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
-    expect(picker.value).toBe('personal');
-    fireEvent.click(reader.getByRole('button', { name: 'Archive message' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Select messages' }));
-    fireEvent.change(picker, { target: { value: 'work' } });
-    expect(picker.selectedOptions[0].text).toBe('Work demo');
-    expect(screen.getByRole('heading', { name: 'Friday launch checklist' })).toBeTruthy();
-    expect(screen.getByText('3 messages')).toBeTruthy();
-    expect(screen.queryByRole('checkbox', { name: /select all/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
-    fireEvent.change(picker, { target: { value: 'personal' } });
-    expect(screen.queryByRole('button', { name: /dolomites field notes/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
-    expect(screen.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
-  });
-
-  it('shows sample summaries and keeps unavailable summaries collapsed', () => {
-    render(<App />);
-    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
-    expect(reader.getByText('Lusi Smart Summary').closest('details')?.open).toBe(true);
-    expect(reader.getByText(/meet at the trailhead before sunrise/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: /weekend plans/i }));
-    expect(reader.getByText(/she’ll bring coffee/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /welcome to lusi/i }));
-    expect(reader.getByText('Lusi Smart Summary').closest('details')?.open).toBe(false);
-    expect(reader.getByText('There is no summary for this message.')).toBeTruthy();
-  });
-
-  it('reopens a draft with its attachments and moves it to Sent on a successful demo send', () => {
-    vi.useFakeTimers();
-
-    render(<App />);
-    const account = screen.getByRole('combobox', { name: 'Switch account' });
-    const selectAccount = (value: string) => fireEvent.change(account, { target: { value } });
-    selectAccount('work');
-    const openComposer = () => fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
-    openComposer();
-    const composer = () => within(screen.getByRole('dialog'));
-    const copies = composer().getByRole('button', { name: 'Cc / Bcc' });
-    fireEvent.click(copies);
-    fireEvent.change(composer().getByLabelText('Cc', { exact: true }), { target: { value: 'copy@example.test' } });
-    fireEvent.click(copies);
-    expect(composer().queryByLabelText('Cc', { exact: true })).toBeNull();
-    fireEvent.change(composer().getByLabelText('Subject'), { target: { value: 'Demo attachment test' } });
-    const files = [new File(['notes'], 'notes.txt'), new File(['route'], 'route.txt')];
-    fireEvent.change(composer().getByLabelText('Attach files'), { target: { files } });
-    expect(within(composer().getByRole('list', { name: 'Attachments' })).getAllByRole('listitem')).toHaveLength(2);
-    fireEvent.click(composer().getByRole('button', { name: 'Remove notes.txt' }));
-    expect(document.activeElement).toBe(composer().getByRole('button', { name: 'Attach files' }));
-    fireEvent.click(composer().getByRole('button', { name: 'Close composer' }));
-    selectAccount('personal');
-    fireEvent.click(screen.getByRole('button', { name: /^Drafts/ }));
-    expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
-    selectAccount('work');
-    fireEvent.click(screen.getByRole('button', { name: /^Drafts/ }));
-    fireEvent.click(screen.getByRole('button', { name: /demo attachment test/i }));
-    expect(composer().getByLabelText<HTMLInputElement>('Cc', { exact: true }).value).toBe('copy@example.test');
-    expect(composer().queryByText('notes.txt')).toBeNull();
-    expect(composer().getByText('route.txt')).toBeTruthy();
-    fireEvent.click(composer().getByRole('button', { name: 'Send' }));
-    expect(composer().getByRole('alert').textContent).toMatch(/valid recipient/);
-    fireEvent.change(composer().getByLabelText('To'), { target: { value: 'fail@example.test' } });
-    fireEvent.click(composer().getByRole('button', { name: 'Send' }));
-    expect(composer().getByRole('status').textContent).toMatch(/Sending/);
-    act(() => vi.advanceTimersByTime(450));
-    expect(composer().getByRole('alert').textContent).toMatch(/failed/);
-    expect(document.querySelector('.send-bird')).toBeNull();
-    fireEvent.change(composer().getByLabelText('To'), { target: { value: 'friend@example.test' } });
-    fireEvent.click(composer().getByRole('button', { name: 'Send' }));
-    act(() => vi.advanceTimersByTime(450));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    const bird = document.querySelector('.send-bird');
-    expect(bird?.getAttribute('aria-hidden')).toBe('true');
-    expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Mail folders' })).getByRole('button', { name: 'Sent' }));
-    const sent = screen.getByRole('button', { name: /demo attachment test/i });
-    fireEvent.click(sent);
-    expect(screen.getByText('route.txt')).toBeTruthy();
-    expect(screen.getAllByText('Work demo').length).toBeGreaterThan(1);
-    selectAccount('personal');
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Mail folders' })).getByRole('button', { name: 'Sent' }));
-    expect(screen.queryByRole('button', { name: /demo attachment test/i })).toBeNull();
-  });
-
-  it('updates the sample mailbox from row actions without opening another message', () => {
-    render(<App />);
-    const actions = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
-    const inbox = screen.getByRole('button', { name: /^Inbox/ });
-    fireEvent.click(actions.getByRole('button', { name: 'Mark as read' }));
-    expect(actions.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
-    expect(within(inbox).getByLabelText('3 unread')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Dolomites field notes' })).toBeTruthy();
-
-    const archive = actions.getByRole('button', { name: 'Archive message' });
-    act(() => archive.focus());
-    fireEvent.click(archive);
-    expect(screen.queryByRole('button', { name: /weekend plans/i })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole('searchbox'));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
-    const archived = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
-    expect(archived.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
-    fireEvent.click(archived.getByRole('button', { name: 'Move to Trash' }));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Trash' }));
-    const trashed = within(screen.getByRole('group', { name: 'Manage message · Weekend plans' }));
-    expect(trashed.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
-    expect(trashed.queryByRole('button', { name: 'Move to Trash' })).toBeNull();
-  });
-
-  it('shares reader actions with the mailbox', () => {
-    render(<App />);
-    const toolbar = within(screen.getByRole('group', { name: 'Manage message' }));
-    expect(toolbar.getByLabelText('Snooze message')).toBeTruthy();
-
-    fireEvent.click(toolbar.getByRole('button', { name: 'Add star' }));
-    fireEvent.click(toolbar.getByRole('button', { name: 'Mark as read' }));
-    fireEvent.click(toolbar.getByRole('button', { name: 'Archive message' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
-    fireEvent.click(screen.getByRole('button', { name: /dolomites field notes/i }));
-    expect(toolbar.getByRole('button', { name: 'Remove star' }).getAttribute('aria-pressed')).toBe('true');
-    expect(toolbar.getByRole('button', { name: 'Mark as unread' })).toBeTruthy();
-    fireEvent.click(toolbar.getByRole('button', { name: 'Move to Trash' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Trash' }));
-    expect(screen.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
-    fireEvent.click(toolbar.getByRole('button', { name: 'Restore message' }));
-    expect(screen.queryByRole('button', { name: /dolomites field notes/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-    expect(screen.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
-  });
-
-  it('returns snoozed messages early on request or at 09:00 the next day', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 10, 20, 18));
-    render(<App />);
-    const toolbar = () => within(screen.getByRole('group', { name: 'Manage message' }));
-    const snooze = () => {
-      const control = toolbar().getByLabelText('Snooze message');
-      control.closest('details')!.open = true;
-      fireEvent.click(toolbar().getByRole('button', { name: 'Snooze until tomorrow at 09:00' }));
-    };
-    const fieldNotes = () => screen.queryByRole('button', { name: /dolomites field notes/i });
-    snooze();
-    expect(fieldNotes()).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Snoozed/ }));
-    expect(fieldNotes()).toBeTruthy();
-    fireEvent.click(toolbar().getByRole('button', { name: 'End snooze' }));
-    expect(fieldNotes()).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
-    expect(fieldNotes()).toBeTruthy();
-    snooze();
-    act(() => vi.advanceTimersByTime(15 * 60 * 60 * 1000 - 1));
-    expect(fieldNotes()).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
-    expect(fieldNotes()).toBeTruthy();
-  });
-
-  it('filters messages within the current folder and clears search when switching folders', () => {
-    render(<App />);
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'weekend' } });
-    expect(screen.getAllByRole('listitem')).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: 'Weekend plans' })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
-    expect(screen.getByRole('heading', { name: 'Travel itinerary' })).toBeTruthy();
-    expect((screen.getByRole<HTMLInputElement>('searchbox')).value).toBe('');
-  });
-
-  it('searches across folders, sorts results, and filters messages with files', () => {
-    render(<App />);
-    const list = within(screen.getByRole('region', { name: 'Messages' }));
-    fireEvent.change(list.getByRole('combobox', { name: 'Search scope' }), { target: { value: 'all' } });
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Train tickets' } });
-    expect(list.getByRole('button', { name: /travel itinerary/i })).toBeTruthy();
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '' } });
-    fireEvent.change(list.getByRole('combobox', { name: 'Sort messages' }), { target: { value: 'oldest' } });
-    expect(list.getAllByRole('listitem')[0].textContent).toMatch(/old meeting invitation/i);
-    fireEvent.click(list.getByRole('button', { name: 'Has attachments' }));
-    expect(list.getAllByRole('listitem')).toHaveLength(1);
-    expect(list.getByRole('button', { name: /dolomites field notes/i })).toBeTruthy();
-  });
-
-  it('applies and undoes a bulk archive without opening the selected messages', () => {
-    render(<App />);
-    const list = within(screen.getByRole('region', { name: 'Messages' }));
-    fireEvent.click(list.getByRole('button', { name: 'Select messages' }));
-    const actions = within(list.getByRole('group', { name: 'Bulk actions' }));
-    expect(actions.getByRole<HTMLButtonElement>('button', { name: 'Archive message' }).disabled).toBe(true);
-    fireEvent.click(list.getByRole('checkbox', { name: 'Select Weekend plans' }));
-    fireEvent.click(list.getByRole('checkbox', { name: 'Select Reading recommendations' }));
-    expect(list.getByRole('status').textContent).toBe('2 selected');
-    expect(screen.getByRole('heading', { name: 'Dolomites field notes' })).toBeTruthy();
-    fireEvent.click(actions.getByRole('button', { name: 'Archive message' }));
-    expect(list.queryByRole('group', { name: 'Bulk actions' })).toBeNull();
-    expect(list.queryByRole('button', { name: /Weekend plans/i })).toBeNull();
-    expect(list.queryByRole('button', { name: /Reading recommendations/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-    expect(list.getByRole('button', { name: /Weekend plans/i })).toBeTruthy();
-    expect(list.getByRole('button', { name: /Reading recommendations/i })).toBeTruthy();
-  });
-
-  it('clears bulk selection on filter changes and selects only visible results', () => {
-    render(<App />);
-    const list = within(screen.getByRole('region', { name: 'Messages' }));
-    const select = list.getByRole('button', { name: 'Select messages' });
-    fireEvent.click(select);
-    fireEvent.click(list.getByRole('button', { name: 'Select all visible' }));
-    expect(list.getByRole('status').textContent).toBe('6 selected');
-    fireEvent.click(within(list.getByRole('group', { name: 'Filter messages' })).getByRole('button', { name: 'Unread' }));
-    expect(select.getAttribute('aria-pressed')).toBe('false');
-    fireEvent.click(select);
-    fireEvent.click(list.getByRole('button', { name: 'Select all visible' }));
-    expect(list.getByRole('status').textContent).toBe('4 selected');
-    const actions = within(list.getByRole('group', { name: 'Bulk actions' }));
-    fireEvent.click(actions.getByRole('button', { name: 'Mark as read' }));
-    expect(list.getByText('No messages found')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-    expect(list.getAllByRole('listitem')).toHaveLength(4);
-  });
-
-  it('uses distinct recipients for Reply all and keeps originals attached when forwarding', () => {
-    const message = demoMessages[0];
-    const reply = makeDraft({ mode: 'reply', message }, demoAccounts.personal.address);
-    const replyAll = makeDraft({ mode: 'replyAll', message }, demoAccounts.personal.address);
-    const forwarded = makeDraft({ mode: 'forward', message }, demoAccounts.personal.address);
-    const work = demoAccounts.work;
-    expect(makeDraft({ mode: 'replyAll', message: work.messages.en[0] }, work.address).to).toBe('ada@example.com, deniz@example.com');
-    expect(reply.to).toBe(message.address);
-    expect(replyAll.to).toBe('mona@example.com, ayla@example.com');
-    expect(replyAll.cc).toBe('sam@example.com');
-    expect(forwarded.attachments).toHaveLength(2);
-  });
-
-  it('keeps appearance synchronized between the sidebar and Settings', () => {
-    render(<App />);
-    const sidebar = within(screen.getByRole('complementary', { name: 'Sidebar' }));
-    const workspace = screen.getByRole('main').closest('[data-theme]');
-    expect(workspace?.getAttribute('data-theme-id')).toBe('default');
-    expect(sidebar.getByRole<HTMLInputElement>('radio', { name: 'System' }).checked).toBe(true);
-    fireEvent.click(sidebar.getByRole('radio', { name: 'Light' }));
-    expect(workspace?.getAttribute('data-color-scheme')).toBe('light');
-
+    const sidebar = within(await screen.findByRole('complementary', { name: 'Sidebar' }));
+    fireEvent.click(sidebar.getByRole('radio', { name: 'Dark' }));
+    const settingsTrigger = screen.getByRole('button', { name: 'Settings' });
     const settings = within(openSettings());
-    expect(settings.getByRole<HTMLInputElement>('radio', { name: 'Light' }).checked).toBe(true);
-    fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
-    expect(workspace?.getAttribute('data-color-scheme')).toBe('dark');
+    expect(settings.getByRole<HTMLInputElement>('radio', { name: 'Dark' }).checked).toBe(true);
+    expect(settings.getByText('mail@example.test')).toBeTruthy();
+    fireEvent.click(settings.getByRole('radio', { name: 'Light' }));
     fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
-    expect(sidebar.getByRole<HTMLInputElement>('radio', { name: 'Dark' }).checked).toBe(true);
-    fireEvent.click(sidebar.getByRole('radio', { name: 'System' }));
-    expect(workspace?.getAttribute('data-theme')).toBe('system');
+    expect(document.activeElement).toBe(settingsTrigger);
+    expect(sidebar.getByRole<HTMLInputElement>('radio', { name: 'Light' }).checked).toBe(true);
   });
 
-  it('switches theme layouts independently from appearance', () => {
+  it('ignores a late response from the previously selected folder', async () => {
+    const invoke = mockMailbox();
+    const implementation = invoke.getMockImplementation()!;
+    let finishSent: ((headers: typeof fixtureHeader[]) => void) | undefined;
+    invoke.mockImplementation((command, args) => command === 'read_connected_folder' && args.folder === 'INBOX.Outgoing'
+      ? new Promise((resolve) => { finishSent = resolve; })
+      : implementation(command, args));
     render(<App />);
-    const settings = within(openSettings());
-    const workspace = screen.getByRole('main').closest('[data-theme]');
-    const theme = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Theme' });
-
-    fireEvent.change(theme, { target: { value: 'flat' } });
-    expect(workspace?.getAttribute('data-theme-id')).toBe('flat');
-    expect(workspace?.getAttribute('data-theme')).toBe('system');
-
-    fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
-    expect(workspace?.getAttribute('data-theme-id')).toBe('flat');
-    expect(workspace?.getAttribute('data-color-scheme')).toBe('dark');
-
-    fireEvent.change(theme, { target: { value: 'default' } });
-    expect(workspace?.getAttribute('data-theme-id')).toBe('default');
-    expect(workspace?.getAttribute('data-color-scheme')).toBe('dark');
+    const nav = within(await screen.findByRole('navigation', { name: 'Mail folders' }));
+    fireEvent.click(await nav.findByRole('button', { name: 'Sent' }));
+    fireEvent.click(nav.getByRole('button', { name: 'Archive' }));
+    expect(await screen.findByRole('button', { name: /Archived message/ })).toBeTruthy();
+    await act(async () => finishSent?.([{ ...fixtureHeader, subject: 'Late sent message' }]));
+    expect(screen.queryByRole('button', { name: /Late sent message/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Archived message/ })).toBeTruthy();
   });
 
-  it('uses the system language and switches the interface and sample mail together', () => {
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['tr-TR']);
+  it('keeps the folder navigation available when the sidebar is collapsed', async () => {
+    mockMailbox();
     render(<App />);
-    expect(screen.getByRole('heading', { name: 'Gelen Kutusu' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Dolomitler saha notları' })).toBeTruthy();
-    expect(document.documentElement.lang).toBe('tr');
-    const account = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Hesap değiştir' });
-    fireEvent.change(account, { target: { value: 'work' } });
-    expect(account.selectedOptions[0].text).toBe('İş demo hesabı');
-    expect(screen.getByRole('heading', { name: 'Cuma yayını için kontrol listesi' })).toBeTruthy();
-
-    openSettings('Ayarlar');
-    const language = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Dil' });
-    expect(language.value).toBe('system');
-    fireEvent.change(language, { target: { value: 'en' } });
-    expect(screen.getByRole('heading', { name: 'Inbox' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Friday launch checklist' })).toBeTruthy();
-    expect(document.documentElement.lang).toBe('en');
-
-    fireEvent.change(language, { target: { value: 'system' } });
-    expect(screen.getByRole('heading', { name: 'Gelen Kutusu' })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse sidebar' }));
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeTruthy();
+    const folders = within(screen.getByRole('navigation', { name: 'Mail folders' }));
+    expect(await folders.findByRole('button', { name: 'Sent' })).toBeTruthy();
   });
 
-  it('falls back to English for an unsupported system language', () => {
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['de-DE']);
-    render(<App />);
-    expect(screen.getByRole('heading', { name: 'Inbox' })).toBeTruthy();
-    openSettings();
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Language' }).value).toBe('system');
-  });
-
-  it('opens Settings, changes the active account and returns focus when dismissed', () => {
-    render(<App />);
-    const trigger = screen.getByRole('button', { name: 'Settings' });
-    expect(screen.queryByRole('combobox', { name: 'Theme' })).toBeNull();
-
-    const drawer = openSettings();
-    const controls = within(drawer);
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    expect(document.activeElement).toBe(controls.getByRole('button', { name: 'Close settings' }));
-    expect(controls.getByRole('heading', { name: 'System Settings' })).toBeTruthy();
-    const accounts = within(controls.getByRole('group', { name: 'Account Center' }));
-    expect(accounts.getByRole<HTMLInputElement>('radio', { name: /Demo account/ }).checked).toBe(true);
-    fireEvent.click(accounts.getByRole('radio', { name: /Work demo/ }));
-    expect(accounts.getByRole<HTMLInputElement>('radio', { name: /Work demo/ }).checked).toBe(true);
-
-    fireEvent.keyDown(window, { key: 'n', metaKey: true });
-    expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    fireEvent(drawer, new Event('cancel', { cancelable: true }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(document.activeElement).toBe(trigger);
-    expect(screen.getByRole('heading', { name: 'Friday launch checklist' })).toBeTruthy();
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Switch account' }).value).toBe('work');
-  });
-
-  it('dismisses Settings on backdrop click and keeps it open on an inside click', () => {
-    render(<App />);
-    const drawer = openSettings();
-    fireEvent.click(within(drawer).getByRole('heading', { name: 'Settings' }));
-    expect(screen.getByRole('dialog')).toBe(drawer);
-    fireEvent.click(drawer);
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('moves focus into the narrow reader and restores it on return', () => {
+  it('moves focus into a message in a narrow window and restores it on return', async () => {
     vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    mockMailbox();
     render(<App />);
-
-    const message = screen.getByRole('button', { name: /notes from our design review/i });
+    const message = await screen.findByRole('button', { name: /Inbox message/ });
     fireEvent.click(message);
-    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Notes from our design review' }));
-
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Inbox message' }));
     fireEvent.click(screen.getByRole('button', { name: 'Back to messages' }));
     expect(document.activeElement).toBe(message);
-  });
-
-  it('filters unread and starred messages and exposes the selected filter', () => {
-    render(<App />);
-    const filters = screen.getByRole('group', { name: 'Filter messages' });
-    const starred = within(filters).getByRole('button', { name: 'Starred' });
-    fireEvent.click(starred);
-    expect(starred.getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getAllByRole('listitem')).toHaveLength(2);
-
-    fireEvent.click(within(filters).getByRole('button', { name: 'Unread' }));
-    expect(screen.getAllByRole('listitem')).toHaveLength(4);
-  });
-
-  it('resizes the message list by keyboard within its supported bounds', () => {
-    render(<App />);
-    const separator = screen.getByRole('separator', { name: 'Resize message list' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('380');
-    fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('388');
-    fireEvent.keyDown(separator, { key: 'Home' });
-    fireEvent.keyDown(separator, { key: 'ArrowLeft' });
-    expect(separator.getAttribute('aria-valuenow')).toBe('290');
-  });
-
-  it('collapses and expands the sidebar while keeping folder actions available', () => {
-    render(<App />);
-    const sidebar = screen.getByRole('complementary', { name: 'Sidebar' });
-    fireEvent.click(within(sidebar).getByRole('button', { name: 'Collapse sidebar' }));
-
-    const expand = within(sidebar).getByRole('button', { name: 'Expand sidebar' });
-    expect(expand.getAttribute('aria-expanded')).toBe('false');
-    const archive = within(sidebar).getByRole('button', { name: 'Archive' });
-    expect(archive.getAttribute('title')).toBe('Archive');
-    fireEvent.click(archive);
-    expect(screen.getByRole('heading', { name: 'Travel itinerary' })).toBeTruthy();
-
-    fireEvent.click(expand);
-    expect(within(sidebar).getByRole('button', { name: 'Collapse sidebar' }).getAttribute('aria-expanded')).toBe('true');
   });
 });
