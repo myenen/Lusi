@@ -24,7 +24,7 @@ Default: three columns.
 
 | Region | Suggested width | Contents |
 | --- | --- | --- |
-| Navigation sidebar | 220–250 px | Lusi logo, Compose, Inbox, Starred, Sent, Drafts, Trash, Archive, folders, accounts, settings |
+| Navigation sidebar | 220–250 px | Lusi logo, Compose, Inbox, Starred, Sent, Drafts, Trash, Archive, folders, quick account switcher |
 | Message list | 340–400 px | Search, filters, message rows, timestamps, unread and starred states |
 | Reading pane | Remaining space, min ~420 px | Subject, sender, actions, sanitized message body, attachments, reply |
 
@@ -138,6 +138,12 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Confirm successful sending with a brief animated Lusi bird and a quiet chirp. Use a stationary fade when reduced motion is enabled.
 - Use a soft tap for archiving and a lower cue for moving to Trash. A bulk action plays its cue once.
 - Use the same material system but keep the editor surface mostly opaque.
+
+### Settings drawer
+
+- Open Settings from the gear at the upper-right edge of the workspace. The drawer slides in from the right and uses the shared frosted dialog backdrop.
+- Keep the Account Center and system settings in the drawer. Provide a close button and support dismissal with Escape or a backdrop click.
+- Keep the native window controls and disable Tauri’s default macOS menu.
 
 ### Notifications and tray
 - Native OS notifications; allow hiding sender/subject/body previews.

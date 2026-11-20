@@ -1,5 +1,6 @@
+import { Settings } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
-import type { Filter } from '../components/ui/Controls';
+import { IconButton, type Filter } from '../components/ui/Controls';
 import { Composer } from '../features/mail/Composer';
 import { demoAccounts, type DemoAccountId } from '../features/mail/demo-accounts';
 import { draftMessage, emptyDraft, makeDraft, type ComposeTarget, type Draft, type SavedDraft } from '../features/mail/demo-compose';
@@ -8,11 +9,9 @@ import { MailList } from '../features/mail/MailList';
 import { MessageReader } from '../features/mail/MessageReader';
 import { Sidebar } from '../features/mail/Sidebar';
 import { useMailSounds } from '../features/mail/send-sound';
+import { SettingsDrawer } from '../features/settings/SettingsDrawer';
 import { catalog, LocaleContext } from './i18n';
-import { LanguageSelect } from './LanguageSelect';
 import { PaneDivider } from './PaneDivider';
-import { ThemePresetSelect } from './ThemePresetSelect';
-import { ThemeSelect } from './ThemeSelect';
 import { resolveThemeId, useColorScheme } from './themes';
 import { useUiPreferences } from './ui-preferences';
 
@@ -37,6 +36,7 @@ export function App() {
   const [bulkSelection, setBulkSelection] = useState<Set<DemoMessage['id']>>();
   const [mobilePane, setMobilePane] = useState<'list' | 'reader'>('list');
   const [showFolders, setShowFolders] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [compose, setCompose] = useState<SavedDraft>();
   const nextMessage = useRef(0);
   const [notice, setNotice] = useState<{ text: string; undo?: () => void; openSent?: boolean }>();
@@ -45,6 +45,7 @@ export function App() {
   const mailShell = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const folderToggle = useRef<HTMLButtonElement>(null);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
   const messageTrigger = useRef<HTMLButtonElement>(null);
   const readerHeading = useRef<HTMLHeadingElement>(null);
   const { preferences, locale, update, error, ready } = useUiPreferences();
@@ -183,7 +184,7 @@ export function App() {
 
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
-      if (compose) return;
+      if (compose || settingsOpen) return;
       if (showFolders && event.key === 'Escape') {
         event.preventDefault();
         closeFolders();
@@ -203,7 +204,7 @@ export function App() {
 
     window.addEventListener('keydown', onShortcut);
     return () => window.removeEventListener('keydown', onShortcut);
-  }, [compose, showFolders]);
+  }, [compose, settingsOpen, showFolders]);
 
   function chooseFolder(next: Folder) {
     setFolder(next);
@@ -293,11 +294,6 @@ export function App() {
             accountId={accountId} onSelectAccount={chooseAccount}
             onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
             onClose={closeFolders} onSelect={chooseFolder} onCompose={() => { if (showFolders) setShowFolders(false); openComposer({ mode: 'new' }); }}
-            appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={!ready} />}
-            controls={<>
-              <ThemePresetSelect value={themeId} onChange={(themeId) => update({ themeId })} disabled={!ready} />
-              <LanguageSelect value={preferences.language} onChange={(language) => update({ language })} disabled={!ready} />
-            </>}
             divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={!ready} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
           />
           <MailList
@@ -321,6 +317,9 @@ export function App() {
           <MessageReader key={accountId} message={selected} accountAddress={account.address} headingRef={readerHeading} inert={showFolders} onUpdateMessage={updateDemoMessage}
             onBack={() => setMobilePane('list')} onReply={(mode, message) => openComposer({ mode, message })}
             onEditDraft={(message) => openComposer({ mode: 'edit', message })} />
+          <IconButton ref={settingsTrigger} className="settings-trigger" label={labels.settings} icon={Settings}
+            aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls={settingsOpen ? 'settings-drawer' : undefined}
+            disabled={!ready || showFolders} onClick={() => setSettingsOpen(true)} />
         </div>
         {error && <p className="preference-error" role="status">{labels.preferenceErrors[error]}</p>}
         {notice && <div className="mail-notice" inert={showFolders}>
@@ -333,6 +332,9 @@ export function App() {
           if (event.target === event.currentTarget && !event.pseudoElement) setSentFlight(undefined);
         }} />}
         {compose && <Composer key={compose.id} entry={compose} onDraftChange={saveDraft} onSendStart={mailSounds.prepare} onSend={sendDraft} onClose={closeComposer} />}
+        {settingsOpen && <SettingsDrawer accountId={accountId} onSelectAccount={chooseAccount}
+          preferences={preferences} themeId={themeId} onUpdate={update}
+          onClose={() => { setSettingsOpen(false); settingsTrigger.current?.focus(); }} />}
       </div>
     </LocaleContext>
   );

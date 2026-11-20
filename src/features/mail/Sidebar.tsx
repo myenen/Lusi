@@ -4,7 +4,7 @@ import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import type { DemoAccountId } from './demo-accounts';
 import { isInFolder, type DemoMessage, type Folder } from './demo-mail';
-import { SidebarPreferences } from './SidebarPreferences';
+import { SidebarAccount } from './SidebarAccount';
 
 interface FolderEntry { id: Folder; icon: LucideIcon; count?: 'unread' | 'all'; }
 
@@ -42,7 +42,7 @@ function FolderLinks({ entries, messages, selected, tooltips, onSelect }: { entr
   });
 }
 
-export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, appearance, controls, divider }: {
+export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, divider }: {
   folder: Folder;
   messages: DemoMessage[];
   open: boolean;
@@ -54,8 +54,6 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, accountI
   onClose: () => void;
   onSelect: (folder: Folder) => void;
   onCompose: () => void;
-  appearance: ReactNode;
-  controls: ReactNode;
   divider: ReactNode;
 }) {
   const labels = useLabels();
@@ -99,9 +97,7 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, accountI
           <FolderLinks entries={customFolders} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
         </nav>
       </div>
-      <SidebarPreferences accountId={accountId} onSelectAccount={onSelectAccount} appearance={appearance}>
-        {controls}
-      </SidebarPreferences>
+      <SidebarAccount accountId={accountId} onSelectAccount={onSelectAccount} />
       {divider}
     </aside>
   );

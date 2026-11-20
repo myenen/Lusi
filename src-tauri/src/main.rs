@@ -4,6 +4,7 @@ mod preferences;
 
 fn main() -> tauri::Result<()> {
     tauri::Builder::default()
+        .enable_macos_default_menu(false)
         .invoke_handler(tauri::generate_handler![
             preferences::load_ui_preferences,
             preferences::save_ui_preferences
