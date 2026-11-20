@@ -1,10 +1,14 @@
-# Lusi
+# Lusi — Let your messages flow.
+
+![Lusi, an email client for a simpler, focused inbox on macOS, Windows, and Linux](docs/screenshots/lusi-banner.png)
+
+Inspired by *Luscinia*, the nightingale, Lusi was born from a simple idea: communication should feel natural, effortless, and free.
+
+Just as a little bird carries its song across the distance, Lusi helps your messages find their way.
+
+No unnecessary noise. No complexity. Just your messages, beautifully presented.
 
 Lusi is a lightweight, privacy-focused desktop mail client in development. Preview builds target macOS, Windows, and Linux and use a sample mailbox you can explore without adding an account.
-
-![Lusi in light mode with the folder sidebar, message list, and an open sample email](docs/screenshots/lusi-light.jpg)
-
-[View dark mode](docs/screenshots/lusi-dark.jpg)
 
 ## Download the test build
 
@@ -30,6 +34,12 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 - Turkish and English. The interface follows the system language by default, with English as the fallback. Hover over the appearance controls or focus them with the keyboard to reveal the language and theme settings.
 
 Real account setup, sending, sync, and notifications are planned.
+
+## Screenshots
+
+![Lusi in light mode with the folder sidebar, message list, and an open sample email](docs/screenshots/lusi-light.jpg)
+
+[View dark mode](docs/screenshots/lusi-dark.jpg)
 
 ## Preview in a browser first
 
