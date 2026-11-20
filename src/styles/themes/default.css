@@ -88,6 +88,7 @@
     --compose-background: linear-gradient(100deg, #3b5bdb, #4f46e5);
     --sidebar-background: linear-gradient(155deg, var(--sheen), transparent 38%), var(--navigation);
     --filter-thumb-background: var(--floating);
+    --row-actions-background: color-mix(in srgb, var(--floating) 70%, transparent);
     --selection-shadow: inset 0 1px var(--sheen), 0 1px 3px var(--shadow);
   }
 
@@ -191,6 +192,7 @@
 }
 
 .workspace[data-theme-id="default"] {
+  :is(.folder-link, .message-row)[aria-current] { border-color: color-mix(in srgb, var(--selected-edge) 45%, transparent); }
   .sidebar:not([data-collapsed="true"]) .folder-link { border-radius: var(--radius-control); }
   .folder-link[aria-current] .folder-count { background: var(--active-count-background); color: var(--active-count-text); }
   .folder-link[data-folder="work"] svg { color: var(--folder-work); }

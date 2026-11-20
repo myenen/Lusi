@@ -1,50 +1,67 @@
-import { Send, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
-import { useLabels } from '../../app/i18n';
+import { FileText, Paperclip, Send, X } from 'lucide-react';
+import { useContext, useEffect, useRef, useState, type FormEvent } from 'react';
+import { LocaleContext, useLabels, type Locale } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
-import type { DemoMessage } from './demo-mail';
-import type { ReplyMode } from './MessageReader';
+import { splitAddresses, type Draft, type SavedDraft } from './demo-compose';
+import type { DemoAttachment } from './demo-mail';
 
-export type ComposeTarget = { mode: 'new' } | { mode: ReplyMode; message: DemoMessage };
-export interface Draft { to: string; cc: string; bcc: string; subject: string; body: string; }
-export const emptyDraft: Draft = { to: '', cc: '', bcc: '', subject: '', body: '' };
-
-function startingDraft(target: ComposeTarget, newDraft: Draft): Draft {
-  if (target.mode === 'new') return newDraft;
-  const { message, mode } = target;
-  return {
-    ...emptyDraft,
-    to: mode === 'forward' ? '' : message.address,
-    subject: `${mode === 'forward' ? 'Fwd: ' : 'Re: '}${message.subject}`,
-    body: mode === 'forward' ? `\n\n${message.sender}\n${message.body.join('\n\n')}` : '',
-  };
+function formatFileSize(bytes: number, locale: Locale) {
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
+  if (bytes >= 1024 ** 2) return `${number.format(bytes / 1024 ** 2)} MiB`;
+  if (bytes >= 1024) return `${number.format(bytes / 1024)} KiB`;
+  return `${number.format(bytes)} B`;
 }
 
-export function Composer({ target, newDraft, onDraftChange, onClose }: {
-  target: ComposeTarget;
-  newDraft: Draft;
+export function Composer({ entry, onDraftChange, onSend, onClose }: {
+  entry: SavedDraft;
   onDraftChange: (draft: Draft) => void;
+  onSend: () => void;
   onClose: () => void;
 }) {
+  const { target, draft } = entry;
   const labels = useLabels();
-  const [draft, setDraft] = useState(() => startingDraft(target, newDraft));
+  const locale = useContext(LocaleContext);
   const [showCopies, setShowCopies] = useState(Boolean(draft.cc || draft.bcc));
+  const [sendState, setSendState] = useState<'idle' | 'invalid' | 'sending' | 'failed'>('idle');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const toRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const filesRef = useRef<HTMLInputElement>(null);
+  const attachButton = useRef<HTMLButtonElement>(null);
+  const sendTimer = useRef<number | undefined>(undefined);
+  const sending = sendState === 'sending';
 
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog?.showModal();
     if (target.mode === 'reply' || target.mode === 'replyAll') bodyRef.current?.focus();
     else toRef.current?.focus();
-    return () => dialog?.close();
+    return () => { dialog?.close(); window.clearTimeout(sendTimer.current); };
   }, [target.mode]);
 
-  function change(field: keyof Draft, value: string) {
-    const next = { ...draft, [field]: value };
-    setDraft(next);
-    if (target.mode === 'new') onDraftChange(next);
+  function change<Field extends keyof Draft>(field: Field, value: Draft[Field]) {
+    if (sendState !== 'idle') setSendState('idle');
+    onDraftChange({ ...draft, [field]: value });
+  }
+
+  function send(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (sendTimer.current !== undefined) return;
+    const to = splitAddresses(draft.to);
+    const recipients = [...to, ...splitAddresses(draft.cc), ...splitAddresses(draft.bcc)];
+    if (!to.length || recipients.some((address) => !/^[^\s@<>]+@[^\s@]+\.[^\s@]+$/.test(address))) {
+      setSendState('invalid');
+      return;
+    }
+    setSendState('sending');
+    sendTimer.current = window.setTimeout(() => {
+      sendTimer.current = undefined;
+      if (recipients.some((address) => address.toLowerCase() === 'fail@example.test')) {
+        setSendState('failed');
+      } else {
+        onSend();
+      }
+    }, 450);
   }
 
   return (
@@ -53,22 +70,51 @@ export function Composer({ target, newDraft, onDraftChange, onClose }: {
         <h2 id="composer-title">{labels.composeTitles[target.mode]}</h2>
         <IconButton label={labels.closeComposer} icon={X} onClick={onClose} />
       </header>
-      <div className="composer-fields">
-        <div className="composer-recipient">
-          <label>{labels.to}<input ref={toRef} value={draft.to} onChange={(event) => change('to', event.target.value)} /></label>
-          <button className="text-button" type="button" aria-expanded={showCopies} onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
-        </div>
-        {showCopies && <>
-          <label>{labels.cc}<input value={draft.cc} onChange={(event) => change('cc', event.target.value)} /></label>
-          <label>{labels.bcc}<input value={draft.bcc} onChange={(event) => change('bcc', event.target.value)} /></label>
-        </>}
-        <label>{labels.subject}<input value={draft.subject} onChange={(event) => change('subject', event.target.value)} /></label>
-        <textarea ref={bodyRef} aria-label={labels.messageBody} placeholder={labels.writeMessage} value={draft.body} onChange={(event) => change('body', event.target.value)} />
-      </div>
-      <footer className="composer-footer">
-        <small>{labels.sendingUnavailable}</small>
-        <button className="compose-button" type="button" disabled><Send size={16} aria-hidden="true" />{labels.send}</button>
-      </footer>
+      <form onSubmit={send}>
+        <fieldset className="composer-fields" disabled={sending}>
+          <div className="composer-recipient">
+            <label>{labels.to}<input ref={toRef} value={draft.to} onChange={(event) => change('to', event.target.value)} /></label>
+            <button className="text-button" type="button" aria-expanded={showCopies} onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
+          </div>
+          {showCopies && <>
+            <label>{labels.cc}<input value={draft.cc} onChange={(event) => change('cc', event.target.value)} /></label>
+            <label>{labels.bcc}<input value={draft.bcc} onChange={(event) => change('bcc', event.target.value)} /></label>
+          </>}
+          <label>{labels.subject}<input value={draft.subject} onChange={(event) => change('subject', event.target.value)} /></label>
+          <textarea ref={bodyRef} aria-label={labels.messageBody} placeholder={labels.writeMessage} value={draft.body} onChange={(event) => change('body', event.target.value)} />
+          {draft.attachments.length > 0 && (
+            <ul className="composer-attachments" aria-label={labels.attachments}>
+              {draft.attachments.map((attachment, index) => (
+                <li className="composer-attachment" key={`${index}-${attachment.name}`}>
+                  <FileText size={17} aria-hidden="true" />
+                  <span className="attachment-meta"><strong title={attachment.name}>{attachment.name}</strong><small>{attachment.size}</small></span>
+                  <IconButton label={labels.removeAttachment(attachment.name)} icon={X} onClick={() => {
+                    attachButton.current?.focus();
+                    change('attachments', draft.attachments.filter((_, position) => position !== index));
+                  }} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {(sendState === 'invalid' || sendState === 'failed') && <p className="composer-error" role="alert">{sendState === 'invalid' ? labels.invalidRecipients : labels.demoSendFailed}</p>}
+        </fieldset>
+        <footer className="composer-footer">
+          <input ref={filesRef} type="file" multiple hidden aria-label={labels.attachFiles} onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            const attachments = files.map<DemoAttachment>((file) => ({
+              file, name: file.name, size: formatFileSize(file.size, locale),
+              type: /^(image\/(jpeg|png|webp|gif|avif))$/.test(file.type) ? 'image' : file.type === 'text/plain' ? 'text' : 'file',
+            }));
+            if (attachments.length) change('attachments', [...draft.attachments, ...attachments]);
+          }} />
+          <button ref={attachButton} className="composer-attach" disabled={sending} type="button" onClick={() => filesRef.current?.click()}>
+            <Paperclip size={16} aria-hidden="true" />{labels.attachFiles}
+          </button>
+          <small role="status">{sending ? labels.demoSending : labels.demoSendHint}</small>
+          <button className="compose-button" type="submit" disabled={sending}><Send size={16} aria-hidden="true" />{labels.send}</button>
+        </footer>
+      </form>
     </dialog>
   );
 }

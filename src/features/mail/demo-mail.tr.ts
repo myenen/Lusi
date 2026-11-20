@@ -1,10 +1,10 @@
-import { demoMessages, type DemoMessage } from './demo-mail';
+import { demoMessages, type DemoMessage, type FixtureId } from './demo-mail';
 
 type DemoTranslation = Pick<DemoMessage, 'subject' | 'body'> & Partial<Pick<
   DemoMessage, 'sender' | 'preview' | 'summary' | 'date' | 'received' | 'initials' | 'image' | 'attachments'
 >>;
 
-const translations: Record<DemoMessage['id'], DemoTranslation> = {
+const translations: Record<FixtureId, DemoTranslation> = {
   'field-notes': {
     subject: 'Dolomitler saha notları',
     preview: 'Rota, saha notları ve dağ sırtından bir önizleme.',

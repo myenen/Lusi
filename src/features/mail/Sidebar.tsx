@@ -61,7 +61,18 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, onToggle
   const tooltips = collapsed && !open;
 
   return (
-    <aside id="sidebar" className="sidebar glass-panel" data-open={open} data-collapsed={collapsed} aria-label={labels.sidebar} role={open ? 'dialog' : undefined} aria-modal={open || undefined}>
+    <aside id="sidebar" className="sidebar glass-panel" data-open={open} data-collapsed={collapsed} aria-label={labels.sidebar} role={open ? 'dialog' : undefined} aria-modal={open || undefined}
+      onKeyDown={(event) => {
+        if (!open || event.key !== 'Tab') return;
+        const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button, input, select')].filter((control) => (
+          control.tabIndex >= 0 && !control.matches(':disabled, input[type="radio"]:not(:checked)')
+          && !control.closest('[inert]') && control.getClientRects().length > 0
+        ));
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && event.target === first) { event.preventDefault(); last?.focus(); }
+        if (!event.shiftKey && event.target === last) { event.preventDefault(); first?.focus(); }
+      }}>
       <div className="sidebar-scroll">
         <div className="brand">
           <span className="brand-icon" aria-hidden="true" /><span className="sidebar-copy">Lusi</span>

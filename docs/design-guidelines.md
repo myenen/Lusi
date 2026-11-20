@@ -89,7 +89,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 
 ## 5. Typography and color
 
-- Use system fonts: `-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`.
+- Use the bundled Plus Jakarta Sans variable font for the interface. Keep the system font stack as a fallback. The SIL Open Font License is bundled at `licenses/plus-jakarta-sans.txt`.
 - Base body: 14–15 px; email reading: 15–16 px with 1.5–1.65 line height.
 - Sender names: medium/semibold; subjects: semibold only for unread messages.
 - Secondary timestamps and previews: muted but readable.
@@ -111,7 +111,8 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Start the desktop message list at 380 px when space allows and keep the user's saved width after resizing.
 - Search input at top; compact `All / Unread / Starred` filters.
 - Rows show sender, subject, one-line preview, time, unread marker, and optional star.
-- Selected row: subtle tinted glass fill and crisp focus indication.
+- Use a tinted fill and a soft edge for the selected folder and message. Keep keyboard focus clearly visible in both appearances.
+- Use a frosted surface for Liquid Glass row actions on hover or keyboard focus, with an opaque fallback for reduced transparency or increased contrast.
 - Unread state must not depend on color alone.
 - Support loading, empty, offline, error, and syncing states without layout jumps.
 
@@ -124,6 +125,9 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - External images are blocked or user-controlled by default to reduce tracking.
 - Attachments display filename, size, file type, and download affordance.
 - Reply / Reply all / Forward at bottom as a compact action group.
+
+### Modal windows
+- Use the shared frosted backdrop behind in-app modal dialogs and the folder drawer. Tint it for the current light or dark appearance and keep the foreground content crisp. For reduced transparency or increased contrast, keep the tint and remove the blur.
 
 ### Compose
 - Calm, spacious editor; To, Cc/Bcc, Subject, Body, Attachments.

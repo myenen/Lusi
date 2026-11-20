@@ -1,4 +1,4 @@
-import { Archive, Inbox, Mail, MailOpen, Menu, Search, Star, Trash2 } from 'lucide-react';
+import { Archive, Inbox, Mail, MailOpen, Menu, Paperclip, Search, Star, Trash2 } from 'lucide-react';
 import type { ReactNode, RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, SegmentedFilter, Toolbar, type Filter } from '../../components/ui/Controls';
@@ -41,7 +41,7 @@ function MailRow({ message, selected, onSelect, onUpdate }: {
 }
 
 export function MailList({
-  title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen, onSearch,
+  title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen, options, onOptionsChange, onSearch,
   onFilter, onSelect, onUpdateMessage, onToggleFolders, divider,
 }: {
   title: string;
@@ -52,6 +52,8 @@ export function MailList({
   searchRef: RefObject<HTMLInputElement | null>;
   folderToggleRef: RefObject<HTMLButtonElement | null>;
   foldersOpen: boolean;
+  options: { allMail: boolean; oldestFirst: boolean; withAttachments: boolean };
+  onOptionsChange: (options: { allMail: boolean; oldestFirst: boolean; withAttachments: boolean }) => void;
   onSearch: (value: string) => void;
   onFilter: (filter: Filter) => void;
   onSelect: (id: string, trigger: HTMLButtonElement) => void;
@@ -73,6 +75,15 @@ export function MailList({
           <input ref={searchRef} type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder={labels.searchPlaceholder} aria-label={labels.searchMessages} />
         </label>
         <SegmentedFilter value={filter} onChange={onFilter} />
+        <div className="list-options">
+          <select aria-label={labels.searchScope} value={options.allMail ? 'all' : 'folder'} onChange={(event) => onOptionsChange({ ...options, allMail: event.target.value === 'all' })}>
+            <option value="folder">{labels.currentFolder}</option><option value="all">{labels.allMail}</option>
+          </select>
+          <select aria-label={labels.sortMessages} value={options.oldestFirst ? 'oldest' : 'newest'} onChange={(event) => onOptionsChange({ ...options, oldestFirst: event.target.value === 'oldest' })}>
+            <option value="newest">{labels.newestFirst}</option><option value="oldest">{labels.oldestFirst}</option>
+          </select>
+          <IconButton label={labels.withAttachments} icon={Paperclip} aria-pressed={options.withAttachments} onClick={() => onOptionsChange({ ...options, withAttachments: !options.withAttachments })} />
+        </div>
       </header>
       {messages.length ? (
         <ul className="message-list">
@@ -84,7 +95,7 @@ export function MailList({
         <div className="list-empty" role="status">
           <Inbox size={26} aria-hidden="true" />
           <p>{labels.noMessages}</p>
-          {(search || filter !== 'all') && <button type="button" className="text-button" onClick={() => { onSearch(''); onFilter('all'); }}>{labels.clearFilters}</button>}
+          {(search || filter !== 'all' || options.withAttachments) && <button type="button" className="text-button" onClick={() => { onSearch(''); onFilter('all'); onOptionsChange({ ...options, withAttachments: false }); }}>{labels.clearFilters}</button>}
         </div>
       )}
       {divider}

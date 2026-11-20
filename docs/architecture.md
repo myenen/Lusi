@@ -4,7 +4,7 @@ The desktop shell in `src-tauri/` hosts the React application in the platform We
 
 The workspace fills the desktop content area. On macOS, the native title bar is overlaid on the workspace so the system window controls sit above the sidebar. Only the main macOS window can use the drag region. The browser preview reserves the same space on macOS, and Windows uses its native title bar.
 
-The React shell in `src/app/` coordinates folder, search, filters, selection, and appearance. It reads static fixtures from `src/features/mail/demo-mail.ts` and renders message bodies as plain text. The example image and download links resolve to assets bundled with the app. The compose preview keeps new message text in memory for the session.
+The React shell in `src/app/` coordinates folder, search, filters, selection, and appearance. It combines static fixtures from `src/features/mail/demo-mail.ts` with session-only message changes, drafts, and demo sends. Message bodies and text attachment previews render as plain text. Sample attachment bytes come from app assets, and selected local files stay in memory during the session. The demo send flow does not call a mail provider.
 
 The typed catalog in `src/app/i18n.ts` contains English and Turkish interface text. The desktop reads the preferred OS locale when it loads preferences. The browser preview uses the browser language. Unsupported languages fall back to English. The Turkish demo fixtures live in `src/features/mail/demo-mail.tr.ts`.
 
