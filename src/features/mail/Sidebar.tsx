@@ -42,7 +42,7 @@ function FolderLinks({ entries, messages, selected, tooltips, onSelect }: { entr
   });
 }
 
-export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, divider }: {
+export function Sidebar({ folder, messages, open, collapsed, canToggle, accountId, onSelectAccount, onToggle, onClose, onSelect, onCompose, appearance, divider }: {
   folder: Folder;
   messages: DemoMessage[];
   open: boolean;
@@ -54,6 +54,7 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, accountI
   onClose: () => void;
   onSelect: (folder: Folder) => void;
   onCompose: () => void;
+  appearance: ReactNode;
   divider: ReactNode;
 }) {
   const labels = useLabels();
@@ -97,7 +98,10 @@ export function Sidebar({ folder, messages, open, collapsed, canToggle, accountI
           <FolderLinks entries={customFolders} messages={messages} selected={folder} tooltips={tooltips} onSelect={onSelect} />
         </nav>
       </div>
-      <SidebarAccount accountId={accountId} onSelectAccount={onSelectAccount} />
+      <div className="sidebar-bottom">
+        <SidebarAccount accountId={accountId} onSelectAccount={onSelectAccount} />
+        {appearance}
+      </div>
       {divider}
     </aside>
   );

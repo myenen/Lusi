@@ -33,7 +33,7 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 - Compose, reply, reply all, and forward in the sample mailbox. Drafts appear in Drafts when edited and retain local attachments. Demo send validates recipients and moves the message to Sent. Use `fail@example.test` to try the failure state. Drafts and mailbox changes last until the window is reloaded.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
-- Open Settings with the gear in the upper-right corner. The drawer contains the Account Center and system settings for appearance, theme, and language.
+- Open Settings with the gear in the upper-right corner. The drawer contains the Account Center and system settings for appearance, theme, and language. The sidebar also provides quick access to system, light, and dark appearance.
 - Turkish and English. The interface follows the system language by default, with English as the fallback.
 
 Real account setup, sending, sync, and notifications are planned.

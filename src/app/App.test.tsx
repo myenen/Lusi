@@ -72,17 +72,18 @@ describe('sample mailbox', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
       expect(starts).toEqual(startup);
 
-      openSettings();
-      const light = screen.getByRole<HTMLInputElement>('radio', { name: 'Light' });
+      const sidebar = within(screen.getByRole('complementary', { name: 'Sidebar' }));
+      const light = sidebar.getByRole<HTMLInputElement>('radio', { name: 'Light' });
       fireEvent.click(light);
       expect(light.checked).toBe(true);
       expect(starts).toEqual(startup);
 
-      fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'flat' } });
+      const settings = within(openSettings());
+      fireEvent.change(settings.getByRole('combobox', { name: 'Theme' }), { target: { value: 'flat' } });
       expect(starts).toEqual([...startup, ...startup]);
       expect(cancel).toHaveBeenCalledTimes(startup.length);
 
-      fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+      fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
       expect(starts).toEqual([...startup, ...startup, ...startup]);
       expect(cancel).toHaveBeenCalledTimes(startup.length * 2);
     } finally {
@@ -339,28 +340,28 @@ describe('sample mailbox', () => {
     expect(forwarded.attachments).toHaveLength(2);
   });
 
-  it('switches appearance directly between system, light, and dark', () => {
+  it('keeps appearance synchronized between the sidebar and Settings', () => {
     render(<App />);
-    openSettings();
-    const controls = within(screen.getByRole('group', { name: 'Appearance' }));
+    const sidebar = within(screen.getByRole('complementary', { name: 'Sidebar' }));
     const workspace = screen.getByRole('main').closest('[data-theme]');
-    expect(controls.getByRole<HTMLInputElement>('radio', { name: 'System' }).checked).toBe(true);
     expect(workspace?.getAttribute('data-theme-id')).toBe('default');
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Theme' }).value).toBe('default');
+    expect(sidebar.getByRole<HTMLInputElement>('radio', { name: 'System' }).checked).toBe(true);
+    fireEvent.click(sidebar.getByRole('radio', { name: 'Light' }));
+    expect(workspace?.getAttribute('data-color-scheme')).toBe('light');
 
-    for (const theme of ['Light', 'Dark', 'System']) {
-      const choice = controls.getByRole<HTMLInputElement>('radio', { name: theme });
-      fireEvent.click(choice);
-      expect(choice.checked).toBe(true);
-      expect(workspace?.getAttribute('data-theme')).toBe(theme.toLowerCase());
-      expect(workspace?.getAttribute('data-theme-id')).toBe('default');
-      if (theme !== 'System') expect(workspace?.getAttribute('data-color-scheme')).toBe(theme.toLowerCase());
-    }
+    const settings = within(openSettings());
+    expect(settings.getByRole<HTMLInputElement>('radio', { name: 'Light' }).checked).toBe(true);
+    fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
+    expect(workspace?.getAttribute('data-color-scheme')).toBe('dark');
+    fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
+    expect(sidebar.getByRole<HTMLInputElement>('radio', { name: 'Dark' }).checked).toBe(true);
+    fireEvent.click(sidebar.getByRole('radio', { name: 'System' }));
+    expect(workspace?.getAttribute('data-theme')).toBe('system');
   });
 
   it('switches theme layouts independently from appearance', () => {
     render(<App />);
-    openSettings();
+    const settings = within(openSettings());
     const workspace = screen.getByRole('main').closest('[data-theme]');
     const theme = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Theme' });
 
@@ -368,7 +369,7 @@ describe('sample mailbox', () => {
     expect(workspace?.getAttribute('data-theme-id')).toBe('flat');
     expect(workspace?.getAttribute('data-theme')).toBe('system');
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+    fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
     expect(workspace?.getAttribute('data-theme-id')).toBe('flat');
     expect(workspace?.getAttribute('data-color-scheme')).toBe('dark');
 

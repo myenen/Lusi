@@ -106,6 +106,7 @@ Do not use strong neon glows, thick luminous borders, or multiple overlapping bl
 - Highlight active folder with a soft translucent pill and restrained accent.
 - Show unread counts as compact badges, not oversized bright bubbles.
 - Account switcher belongs at bottom or in a clearly labeled section.
+- Keep the light, dark, and system appearance shortcuts below the account switcher and stack them vertically on the collapsed rail.
 
 ### Message list
 - Align the heading with the sidebar brand on desktop. Use a compact top inset and leave room for macOS window controls.

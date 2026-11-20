@@ -12,6 +12,7 @@ import { useMailSounds } from '../features/mail/send-sound';
 import { SettingsDrawer } from '../features/settings/SettingsDrawer';
 import { catalog, LocaleContext } from './i18n';
 import { PaneDivider } from './PaneDivider';
+import { ThemeSelect } from './ThemeSelect';
 import { resolveThemeId, useColorScheme } from './themes';
 import { useUiPreferences } from './ui-preferences';
 
@@ -294,6 +295,7 @@ export function App() {
             accountId={accountId} onSelectAccount={chooseAccount}
             onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
             onClose={closeFolders} onSelect={chooseFolder} onCompose={() => { if (showFolders) setShowFolders(false); openComposer({ mode: 'new' }); }}
+            appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={!ready} />}
             divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={!ready} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
           />
           <MailList
