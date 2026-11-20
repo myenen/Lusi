@@ -1,10 +1,22 @@
 # Lusi
 
-Lusi is a lightweight, privacy-focused desktop mail client in development for macOS and Windows. The current preview uses a sample mailbox you can explore without adding an account.
+Lusi is a lightweight, privacy-focused desktop mail client in development. Preview builds target macOS, Windows, and Linux and use a sample mailbox you can explore without adding an account.
 
 ![Lusi in light mode with the folder sidebar, message list, and an open sample email](docs/screenshots/lusi-light.jpg)
 
 [View dark mode](docs/screenshots/lusi-dark.jpg)
+
+## Download the test build
+
+Open [GitHub Releases](https://github.com/myenen/Lusi/releases) and choose the asset for your system.
+
+| Platform | File | Setup |
+| --- | --- | --- |
+| macOS (Apple Silicon and Intel) | `.dmg` | Open the disk image and drag Lusi to Applications. |
+| Windows (x64) | `-setup.exe` | Run the installer. It downloads WebView2 if the runtime is missing. |
+| Linux (x86-64) | `.deb` or `.AppImage` | Use the package installer on Debian/Ubuntu, or mark the AppImage executable and open it. AppImage support depends on your distribution and its FUSE support. |
+
+Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed without Apple notarization and Windows builds have no publisher signature, so either OS may show a trust warning or enforce its local policy.
 
 ## What works today
 
@@ -43,8 +55,6 @@ npm run tauri -- dev
 
 ## Build an installer
 
-On macOS, run `npm run tauri -- build --bundles dmg -- --locked`. On Windows, run `npm run tauri -- build --bundles nsis -- --locked`. Tauri writes the development installers under `src-tauri/target/release/bundle/`. [Desktop CI](https://github.com/myenen/Lusi/actions/workflows/ci.yml) is configured to retain both installers as workflow artifacts.
-
-To install the macOS preview, open the DMG and drag Lusi to Applications. On Windows, open the installer and follow its prompts. There is no published release yet. Preview installers may trigger OS trust warnings.
+On macOS, run `npm run tauri -- build --bundles dmg -- --locked`. On Windows, use `--bundles nsis`. On Linux, use `--bundles deb,appimage` after installing the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Tauri writes native builds to `src-tauri/target/release/bundle/`. A build with `--target universal-apple-darwin` writes to `src-tauri/target/universal-apple-darwin/release/bundle/` and requires both Rust macOS targets. [Desktop CI](https://github.com/myenen/Lusi/actions/workflows/ci.yml) builds and retains the installers for all three platforms.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks, [the architecture overview](docs/architecture.md) for application boundaries, and [the design guidelines](docs/design-guidelines.md) for the interface direction.
