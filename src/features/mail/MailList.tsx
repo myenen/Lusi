@@ -1,4 +1,4 @@
-import { Inbox, Menu, RefreshCw, Search } from 'lucide-react';
+import { Inbox, Menu, RefreshCw, Search, Star } from 'lucide-react';
 import type { ReactNode, RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, SegmentedFilter, type Filter } from '../../components/ui/Controls';
@@ -63,7 +63,9 @@ export function MailList({
                 <span className="message-subject">{message.subject}</span>
                 <span className="message-snippet">{message.preview}</span>
               </span>
-              <span className="message-row-meta">{message.date}</span>
+              <span className="message-row-meta">{message.date}
+                {message.starred && <Star className="message-star" size={14} aria-label={labels.filters.starred} />}
+              </span>
             </button>
           </li>
         ))}

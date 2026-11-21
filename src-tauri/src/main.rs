@@ -17,7 +17,9 @@ fn main() -> tauri::Result<()> {
             mail::refresh_connected_inbox,
             mail::list_connected_folders,
             mail::read_connected_folder,
-            mail::read_connected_message
+            mail::read_connected_message,
+            mail::send_connected_message,
+            mail::update_connected_message
         ])
         .run(tauri::generate_context!())
 }

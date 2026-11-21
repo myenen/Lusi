@@ -4,7 +4,7 @@ import { useLabels } from '../../app/i18n';
 import { checkImapSettings, connectImapAccount, discoverImapSettings, imapErrorMessage, type ConnectedInbox, type DiscoveredImap } from './imap-api';
 
 type SetupStep = 'email' | 'server' | 'password';
-const connectionFailures = new Set<unknown>(['network', 'tls', 'timeout', 'inbox']);
+const connectionFailures = new Set<unknown>(['network', 'tls', 'timeout', 'inbox', 'smtpTls', 'smtpUnavailable']);
 
 export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
   hasMacTitleBar: boolean;
@@ -16,6 +16,12 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
   const [email, setEmail] = useState('');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('993');
+  const [startTls, setStartTls] = useState(false);
+  const [username, setUsername] = useState('');
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState('587');
+  const [smtpStartTls, setSmtpStartTls] = useState(true);
+  const [smtpUsername, setSmtpUsername] = useState('');
   const [discovery, setDiscovery] = useState<DiscoveredImap | null>();
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState<unknown>();
@@ -48,17 +54,26 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
     pending.current = true;
     setBusy(true);
     setFailure(undefined);
-    const account = { email: email.trim(), host: host.trim(), port: Number(port) };
+    const account = {
+      email: email.trim(), host: host.trim(), port: Number(port),
+      ...(startTls ? { startTls: true } : {}), ...(username.trim() ? { username: username.trim() } : {}),
+    };
+    const outgoing = {
+      host: smtpHost.trim(), port: Number(smtpPort), startTls: smtpStartTls,
+      ...(smtpUsername.trim() ? { username: smtpUsername.trim() } : {}),
+    };
     try {
       if (step === 'password') {
         const input = passwordInput.current;
         if (!input?.value) return;
         const password = input.value;
         input.value = '';
-        onConnected(await connectImapAccount(account, password));
+        onConnected(await connectImapAccount(account, outgoing, password));
       } else if (step === 'server') {
-        if (desktop) await checkImapSettings(account);
-        setDiscovery(undefined);
+        if (desktop) await checkImapSettings(account, outgoing);
+        if (!discovery?.needsConfirmation || discovery.host !== account.host.toLowerCase()) {
+          setDiscovery(undefined);
+        }
         setStep('password');
       } else {
         const found = desktop ? await discoverImapSettings(account.email) : null;
@@ -67,10 +82,16 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
         if (found) {
           setHost(found.host);
           setPort(String(found.port));
-          setStep('password');
-        } else {
-          setStep('server');
+          setStartTls(found.startTls ?? false);
+          setUsername(found.username ?? '');
+          if (found.outgoing) {
+            setSmtpHost(found.outgoing.host);
+            setSmtpPort(String(found.outgoing.port));
+            setSmtpStartTls(found.outgoing.startTls ?? false);
+            setSmtpUsername(found.outgoing.username ?? '');
+          }
         }
+        setStep(found?.outgoing ? 'password' : 'server');
       }
     } catch (error) {
       if (step === 'password' && discovery && connectionFailures.has(error)) {
@@ -87,8 +108,9 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
 
   const title = step === 'email' ? labels.title : step === 'server' ? labels.connection : labels.authenticate;
   const description = step === 'email' ? labels.description : step === 'server'
-    ? desktop && discovery === null ? labels.discoveryFallback : labels.imapDescription
-    : discovery ? labels.discoveredServer : labels.passwordDescription;
+    ? discovery && !discovery.outgoing ? labels.smtpFallback
+      : desktop && discovery === null ? labels.discoveryFallback : labels.imapDescription
+    : discovery?.outgoing ? labels.discoveredServer : labels.passwordDescription;
   const status = busy ? { email: labels.discovering, server: undefined, password: labels.connecting }[step] : undefined;
   const submitLabel = status ?? (step === 'password' ? labels.connect : labels.continue);
 
@@ -104,7 +126,10 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
         <form className="account-setup-form" onSubmit={submit} aria-busy={busy}>
           {step !== 'email' && <div className="account-setup-review">
             <span>{email}</span>
-            {step === 'password' && <span>{host.trim()}:{port}</span>}
+            {step === 'password' && <>
+              <span>IMAP · {host.trim()}:{port}</span>
+              <span>SMTP · {smtpHost.trim()}:{smtpPort} ({smtpStartTls ? 'STARTTLS' : 'SSL/TLS'})</span>
+            </>}
             <button className="text-button" type="button" disabled={busy} onClick={editPreviousStep}>
               <ArrowLeft size={15} aria-hidden="true" />{step === 'server' ? labels.edit : labels.editServer}
             </button>
@@ -116,16 +141,65 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
                 setEmail(event.target.value);
                 setHost('');
                 setPort('993');
+                setStartTls(false);
+                setUsername('');
+                setSmtpHost('');
+                setSmtpPort('587');
+                setSmtpStartTls(true);
+                setSmtpUsername('');
                 setFailure(undefined);
               }} />
           </label>}
-          {step === 'server' && <fieldset className="account-setup-fields" disabled={busy}>
+          {step === 'server' && <fieldset className="account-setup-fields" aria-label="IMAP" disabled={busy}>
             <label>{labels.host}
               <input type="text" placeholder="imap.example.com" autoCapitalize="none" spellCheck={false}
                 required maxLength={253} value={host} onChange={(event) => setHost(event.target.value)} />
             </label>
             <label>{labels.port}
               <input type="number" min={1} max={65535} required value={port} onChange={(event) => setPort(event.target.value)} />
+            </label>
+            <label>{labels.imapUsername}
+              <input autoCapitalize="none" spellCheck={false} maxLength={254}
+                value={username} onChange={(event) => setUsername(event.target.value)} />
+            </label>
+            <label>{labels.security}
+              <select value={startTls ? 'starttls' : 'tls'} onChange={(event) => {
+                const useStartTls = event.target.value === 'starttls';
+                if ((!startTls && port === '993') || (startTls && port === '143')) setPort(useStartTls ? '143' : '993');
+                setStartTls(useStartTls);
+              }}>
+                <option value="tls">SSL/TLS</option>
+                <option value="starttls">STARTTLS</option>
+              </select>
+            </label>
+          </fieldset>}
+          {step === 'server' && <fieldset className="account-setup-fields" aria-label="SMTP" disabled={busy}>
+            <label>{labels.smtpHost}
+              <input type="text" placeholder="smtp.example.com" autoCapitalize="none" spellCheck={false}
+                required maxLength={253} value={smtpHost} onChange={(event) => setSmtpHost(event.target.value)} />
+            </label>
+            <label>{labels.smtpPort}
+              <input type="number" min={1} max={65535} required value={smtpPort} onChange={(event) => {
+                const nextPort = event.target.value;
+                setSmtpPort(nextPort);
+                if (nextPort === '465' || nextPort === '587') setSmtpStartTls(nextPort === '587');
+              }} />
+            </label>
+            <label>{labels.smtpUsername}
+              <input autoCapitalize="none" spellCheck={false} maxLength={254}
+                value={smtpUsername} onChange={(event) => setSmtpUsername(event.target.value)} />
+            </label>
+            <label>{labels.smtpSecurity}
+              <select value={smtpStartTls ? 'starttls' : 'tls'} onChange={(event) => {
+                const useStartTls = event.target.value === 'starttls';
+                if ((smtpStartTls && smtpPort === '587') || (!smtpStartTls && smtpPort === '465')) {
+                  setSmtpPort(useStartTls ? '587' : '465');
+                }
+                setSmtpStartTls(useStartTls);
+              }}>
+                <option value="starttls">STARTTLS</option>
+                <option value="tls">SSL/TLS</option>
+              </select>
             </label>
           </fieldset>}
           {step === 'password' && <>

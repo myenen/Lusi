@@ -11,6 +11,7 @@ export interface MessageRow {
   initials: string;
   tone: typeof avatarTones[number];
   unread: boolean;
+  starred: boolean;
 }
 
 type Labels = ReturnType<typeof useLabels>;
@@ -44,5 +45,6 @@ function connectedMessageRow(header: ImapHeader, date: Intl.DateTimeFormat, labe
     initials,
     tone: avatarTones[(sender.codePointAt(0) ?? 0) % avatarTones.length],
     unread: header.unread,
+    starred: header.starred,
   };
 }

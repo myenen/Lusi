@@ -22,7 +22,7 @@ No proprietary backend, required registration, subscription, analytics, advertis
 - **UI:** Tailwind CSS, Radix UI primitives, Lucide icons. Do not introduce Ant Design or another heavyweight component system without approval.
 - **Mail engine and background tasks:** Rust, Tokio.
 - **Persistence:** embedded SQLite, with migrations.
-- **Credential storage:** macOS Keychain / Windows Credential Manager through an appropriately maintained integration; never plaintext secrets in SQLite, logs, or settings.
+- **Credential storage:** encrypt IMAP passwords in SQLite with a separate local app key file for automatic access. Use the OS credential store for OAuth tokens. Never put plaintext secrets in SQLite, logs, or settings.
 - **Mail transport:** IMAP for retrieval/sync; SMTP for sending; standards-compliant MIME parsing/composition.
 - **Desktop integration:** Tauri tray, notifications, autostart, and updater where appropriate.
 - **Distribution:** GitHub Actions and GitHub Releases; macOS DMG and Windows installer artifacts.
@@ -89,8 +89,8 @@ Prefer CSS tokens and reusable primitives over per-page styling. Minimize blur l
 ## 6. Security and privacy — non-negotiable
 
 - Require validated TLS for mail connections; never silently bypass certificate validation.
-- Store credentials/tokens in the OS credential store. Keep secrets out of telemetry, logs, crash reports, screenshots, and exception messages.
-- Render HTML mail as untrusted content: sanitize and isolate it; disable scripts, unsafe navigation, and privileged Tauri access. Block remote images/tracking pixels by default, with explicit per-message or per-sender consent.
+- Store IMAP passwords using authenticated encryption and a random key in the per-user app data directory. Use the OS credential store only to migrate legacy IMAP passwords and to store OAuth tokens. Keep secrets out of telemetry, logs, crash reports, screenshots, and exception messages.
+- Render HTML mail as untrusted content. Sanitize and isolate it and disable scripts, unsafe navigation, and privileged Tauri access. Load remote HTTPS images automatically in the open HTML reader without sending a referrer.
 - Treat links and attachments as untrusted. Display actual link destinations when useful; never auto-execute attachments.
 - Restrict Tauri capabilities and filesystem permissions to the minimum needed. No broad shell execution permissions.
 - Validate inputs at the Rust command boundary. Use parameterized SQL queries and schema migrations.

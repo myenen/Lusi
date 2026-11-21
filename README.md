@@ -26,7 +26,13 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 
 - When no account is connected, Lusi opens the account setup screen in light Liquid Glass.
 - Three resizable panes, a collapsible sidebar, and a folder drawer on narrow windows.
-- Read-only IMAP folders, message search by sender and subject, sorting, and an unread filter.
+- IMAP folders, message search by sender and subject, sorting, and an unread filter.
+- Read formatted HTML and plain-text messages. Remote HTTPS images load automatically in the HTML reader.
+- See key points, requested actions, and explicit deadlines above the message. Summaries are extracted on-device from plain-text and HTML mail.
+- Compose with rich-text controls or edit the HTML source. Outgoing messages include both HTML and a plain-text version.
+- Mark messages as read when opened, or change their read and starred flags manually. Archive, trash, and restore messages on servers with the required folders and IMAP MOVE support.
+- Send through SMTP with Cc, Bcc, and up to 5 MiB of attachments.
+- Reply, reply all, and forward from the reader. Forwarding includes the original text.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
 - Open Settings with the gear in the upper-right corner. The drawer contains the Account Center and system settings for appearance, theme, and language. The sidebar also provides quick access to system, light, and dark appearance.
@@ -34,9 +40,11 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 
 ### Connect a real mailbox
 
-In the desktop build, start with your email address. Lusi looks for the domain’s `_imaps._tcp` DNS SRV record. If discovery returns usable settings, confirm the server details and enter your IMAP password or app password. Otherwise, enter the hostname and implicit TLS port from your provider (usually 993). The full email address is the IMAP login. Linux needs an available Secret Service keyring.
+In the desktop build, start with your email address. Lusi checks the provider’s HTTPS Autoconfig file for incoming IMAP and outgoing SMTP. When both servers are found, enter the password or app password accepted by both. Lusi can also discover IMAP through the domain’s `_imaps._tcp` DNS SRV record. For any missing settings, enter the hostname, port, and TLS mode from your provider. Each login defaults to the full email address and can be set separately.
 
-Lusi currently supports a single read-only IMAP account. The sidebar shows selectable folders discovered with IMAP LIST. Lusi caches up to 50 recent Inbox headers for startup and offline listing. Other folders load up to 50 recent headers as you open them. Open a message to read its text (up to 1 MiB). SMTP, OAuth sign-in, background sync, and notifications are planned.
+Lusi encrypts the IMAP password in its local SQLite database and opens it automatically using a separate `credentials.key` file in the app data directory. During an upgrade, the first mailbox access may prompt for permission to read an existing password from the system credential store. A copy of both the key file and database can be used to recover the password. Keep the key private and retain it if you need to restore the encrypted account.
+
+Lusi currently supports a single account. The sidebar shows selectable folders discovered with IMAP LIST. Lusi caches up to 50 recent Inbox headers for startup and offline listing. Other folders load up to 50 recent headers as you open them. Open a message to read its text (up to 1 MiB). Setup verifies SMTP authentication and Compose sends through the configured outgoing server. Copies in Sent depend on provider behavior. OAuth sign-in, background sync, and notifications are planned.
 
 ## Preview in a browser first
 

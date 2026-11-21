@@ -1,4 +1,6 @@
-use super::{validate_address, Account, MailError};
+mod autoconfig;
+
+use super::{smtp::SmtpSettings, validate_address, Account, MailError};
 use hickory_resolver::{
     proto::rr::{rdata::SRV, RData},
     TokioResolver,
@@ -14,6 +16,11 @@ pub struct DiscoveredImap {
     host: String,
     port: u16,
     needs_confirmation: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    start_tls: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outgoing: Option<SmtpSettings>,
 }
 
 #[tauri::command]
@@ -22,6 +29,13 @@ pub async fn discover_imap_settings(email: String) -> Result<Option<DiscoveredIm
     validate_address(email)?;
     let (_, domain) = email.split_once('@').ok_or(MailError::InvalidSettings)?;
     let domain = domain.to_ascii_lowercase();
+    if let Some(settings) = autoconfig::discover(email, &domain).await? {
+        return Ok(Some(settings));
+    }
+    discover_srv(email, &domain).await
+}
+
+async fn discover_srv(email: &str, domain: &str) -> Result<Option<DiscoveredImap>, MailError> {
     let Ok(resolver) = TokioResolver::builder_tokio().and_then(|builder| builder.build()) else {
         return Ok(None);
     };
@@ -31,7 +45,7 @@ pub async fn discover_imap_settings(email: String) -> Result<Option<DiscoveredIm
     };
     select_server(
         email,
-        &domain,
+        domain,
         lookup
             .answers()
             .iter()
@@ -62,6 +76,8 @@ fn select_server<'a>(
             email: email.into(),
             host,
             port: record.port,
+            username: None,
+            start_tls: false,
         })
         .validated()
         {
@@ -102,6 +118,9 @@ fn select_server<'a>(
             host: account.host,
             port: account.port,
             needs_confirmation: !same_domain,
+            username: None,
+            start_tls: false,
+            outgoing: None,
         })
     }))
 }
@@ -126,7 +145,10 @@ mod tests {
             Ok(Some(DiscoveredImap {
                 host: "imap.example.test".into(),
                 port: 1993,
-                needs_confirmation: false
+                needs_confirmation: false,
+                username: None,
+                start_tls: false,
+                outgoing: None,
             })),
         );
     }

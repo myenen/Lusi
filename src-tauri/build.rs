@@ -10,6 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "list_connected_folders",
         "read_connected_folder",
         "read_connected_message",
+        "send_connected_message",
+        "update_connected_message",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))?;
     Ok(())

@@ -24,8 +24,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-src 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420; base-uri 'none'; form-action 'none'; frame-src 'none'",
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-src about:",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420; base-uri 'none'; form-action 'none'; frame-src about:",
       "capabilities": [
         {
           "identifier": "ui-preferences",
@@ -35,7 +35,7 @@
         {
           "identifier": "mail-account",
           "windows": ["main"],
-          "permissions": ["allow-load-connected-inbox", "allow-discover-imap-settings", "allow-check-imap-settings", "allow-connect-imap-account", "allow-refresh-connected-inbox", "allow-list-connected-folders", "allow-read-connected-folder", "allow-read-connected-message"]
+          "permissions": ["allow-load-connected-inbox", "allow-discover-imap-settings", "allow-check-imap-settings", "allow-connect-imap-account", "allow-refresh-connected-inbox", "allow-list-connected-folders", "allow-read-connected-folder", "allow-read-connected-message", "allow-send-connected-message", "allow-update-connected-message"]
         },
         {
           "identifier": "macos-titlebar",

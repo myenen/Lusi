@@ -8,19 +8,28 @@ description = "A desktop mail client"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ammonia = "4.1"
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
 base64 = "0.22"
+cssparser = "0.38"
 futures-util = "0.3"
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 log = { version = "0.4", features = ["max_level_debug"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
 mail-parser = "1"
+regex = "1"
+unicode-segmentation = "1"
 native-tls = "0.2"
+quick-xml = { version = "0.42", features = ["serialize"] }
 rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls-no-alpn"] }
+ring = "0.17"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sys-locale = "0.3.2"
 tauri = { version = "2", features = [] }
+tempfile = "3"
 tokio = { version = "1", features = ["net", "sync", "time"] }
 tokio-native-tls = "0.3"
 zeroize = "1"
