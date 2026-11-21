@@ -35,16 +35,24 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 - Reply, reply all, and forward from the reader. Forwarding includes the original text.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
-- Open Settings with the gear in the upper-right corner. The drawer contains the Account Center and system settings for appearance, theme, and language. The sidebar also provides quick access to system, light, and dark appearance.
+- Open **Settings → Account Center** to add an email account or select a saved account. With multiple accounts, you can also switch using the account card at the bottom of the sidebar. Lusi reopens the last selected account. The sidebar provides quick access to system, light, and dark appearance.
 - Turkish and English. The interface follows the system language by default, with English as the fallback.
 
 ### Connect a real mailbox
 
-In the desktop build, start with your email address. Lusi checks the provider’s HTTPS Autoconfig file for incoming IMAP and outgoing SMTP. When both servers are found, enter the password or app password accepted by both. Lusi can also discover IMAP through the domain’s `_imaps._tcp` DNS SRV record. For any missing settings, enter the hostname, port, and TLS mode from your provider. Each login defaults to the full email address and can be set separately.
+In the desktop build, start with your email address. Lusi checks the provider’s HTTPS Autoconfig file for incoming IMAP and outgoing SMTP. When both servers are found, enter the password or app password accepted by both. Lusi can also discover IMAP through the domain’s `_imaps._tcp` DNS SRV record. For any missing settings, enter the hostname, port, and TLS mode from your provider. Lusi uses the full email address by default and keeps any login discovered for the chosen server.
+
+For `@gmail.com` and `@googlemail.com`, Lusi selects [Google’s IMAP and SMTP settings](https://developers.google.com/workspace/gmail/imap/imap-smtp) automatically. Select **Sign in with Google** to grant mail access in your browser. If access expires, use **Settings → Account Center → Reconnect with Google**.
+
+To test this flow in a development build, create a **Desktop app** OAuth client in [Google Cloud](https://developers.google.com/identity/protocols/oauth2/native-app) and add your account as a test user if your consent screen is in Testing. Supply the client ID through `LUSI_GOOGLE_CLIENT_ID` when building or launching Lusi. If the client requires a client secret, pass it at runtime through `LUSI_GOOGLE_CLIENT_SECRET`. Keep credentials out of the repository. A public distribution using Gmail’s full mail scope requires the applicable [Google verification](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol#oauth_20_scopes).
 
 Lusi encrypts the IMAP password in its local SQLite database and opens it automatically using a separate `credentials.key` file in the app data directory. During an upgrade, the first mailbox access may prompt for permission to read an existing password from the system credential store. A copy of both the key file and database can be used to recover the password. Keep the key private and retain it if you need to restore the encrypted account.
 
-Lusi currently supports a single account. The sidebar shows selectable folders discovered with IMAP LIST. Lusi caches up to 50 recent Inbox headers for startup and offline listing. Other folders load up to 50 recent headers as you open them. Open a message to read its text (up to 1 MiB). Setup verifies SMTP authentication and Compose sends through the configured outgoing server. Copies in Sent depend on provider behavior. OAuth sign-in, background sync, and notifications are planned.
+Each account has its own folders and cached Inbox. Lusi caches up to 50 recent Inbox headers per account for startup and offline listing. Other folders load up to 50 recent headers as you open them. A paperclip marks messages with attachments, and the reader lists available files. Select a supported file to open a temporary copy in the system’s default app. The download button keeps a copy in Downloads and opens supported file types when the transfer finishes. Both actions support files up to 50 MiB. The reader displays the first 1 MiB of the original message and reports when the preview is truncated. Setup verifies SMTP authentication and Compose sends through the active account’s outgoing server. Copies in Sent depend on provider behavior. Background sync and notifications are planned.
+
+Use **Select messages** next to Refresh to pick individual messages or select all visible results. The bulk toolbar can mark them as read or unread, archive them, or move them to Trash where the server supports it. In Trash, it can restore them to the Inbox. Changing the search or filter clears the selection.
+
+Use **Print preview** in the message reader to review the message before opening the system print dialog. The print layout includes the message and attachment names. Remote images are omitted from the print layout.
 
 ## Preview in a browser first
 

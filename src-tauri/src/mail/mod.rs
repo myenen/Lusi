@@ -1,5 +1,7 @@
+mod attachments;
 mod credentials;
 pub mod discovery;
+mod gmail;
 mod html;
 mod imap;
 mod reply;
@@ -15,11 +17,20 @@ use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
+pub(crate) use attachments::AttachmentPreviews;
+pub use gmail::GmailSession;
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MailError {
     InvalidSettings,
     OAuthRequired,
+    GoogleNotConfigured,
+    GoogleSignIn,
+    GoogleBrowser,
+    GoogleConsent,
+    GoogleAccountMismatch,
+    GoogleGrantExpired,
     AlreadyConnected,
     NoAccount,
     Storage,
@@ -44,7 +55,11 @@ pub enum MailError {
     Folder,
     MailboxChanged,
     MessageMissing,
-    MessageTooLarge,
+    AttachmentUnavailable,
+    AttachmentTooLarge,
+    AttachmentSave,
+    AttachmentOpen,
+    AttachmentOpenUnsupported,
 }
 
 #[derive(Clone, Deserialize)]
@@ -75,25 +90,45 @@ pub struct MailHeader {
     sent_at: Option<i64>,
     unread: bool,
     starred: bool,
+    has_attachments: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Inbox {
+    account_id: AccountId,
     email: String,
     headers: Vec<MailHeader>,
     can_send: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_provider: Option<discovery::OAuthProvider>,
+}
+
+type AccountId = i64;
+
+#[derive(Serialize)]
+pub struct ConnectedAccount {
+    id: AccountId,
+    email: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenedMessage {
     body: Option<String>,
+    body_truncated: bool,
     html: Option<html::HtmlBody>,
+    attachments: Vec<attachments::Attachment>,
     summary: Option<summary::MessageSummary>,
     reply: Option<reply::ReplyDetails>,
     seen: bool,
     seen_error: Option<MailError>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchActionResult {
+    updated: Vec<MessageKey>,
+    error: Option<MailError>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -132,7 +167,24 @@ pub struct MailFolder {
 #[derive(Default)]
 pub struct MailOperations(Mutex<()>);
 
+enum MailAuth {
+    Password(Zeroizing<String>),
+    OAuth(Zeroizing<String>),
+}
+
+impl MailAuth {
+    fn secret(&self) -> &str {
+        match self {
+            Self::Password(secret) | Self::OAuth(secret) => secret,
+        }
+    }
+}
+
 impl Account {
+    fn uses_gmail_oauth(&self) -> bool {
+        address_domain(&self.email).is_ok_and(discovery::is_gmail_domain)
+    }
+
     fn validated(mut self) -> Result<Self, MailError> {
         self.email = self.email.trim().to_owned();
         self.host = self.host.trim().to_ascii_lowercase();
@@ -178,7 +230,7 @@ impl Account {
     }
 }
 
-fn validate_address(email: &str) -> Result<(), MailError> {
+fn address_domain(email: &str) -> Result<&str, MailError> {
     let email = email.trim();
     let (local, domain) = email.split_once('@').ok_or(MailError::InvalidSettings)?;
     if email.len() > 254
@@ -189,16 +241,15 @@ fn validate_address(email: &str) -> Result<(), MailError> {
     {
         return Err(MailError::InvalidSettings);
     }
-    if [
-        "gmail.com",
-        "googlemail.com",
-        "outlook.com",
-        "hotmail.com",
-        "live.com",
-        "msn.com",
-    ]
-    .iter()
-    .any(|provider| domain.eq_ignore_ascii_case(provider))
+    Ok(domain)
+}
+
+fn validate_address(email: &str) -> Result<(), MailError> {
+    let domain = address_domain(email)?;
+    if discovery::is_gmail_domain(domain)
+        || ["outlook.com", "hotmail.com", "live.com", "msn.com"]
+            .iter()
+            .any(|provider| domain.eq_ignore_ascii_case(provider))
     {
         return Err(MailError::OAuthRequired);
     }
@@ -252,6 +303,19 @@ pub async fn load_connected_inbox(app: AppHandle) -> Result<Option<Inbox>, MailE
 }
 
 #[tauri::command]
+pub async fn list_connected_accounts(app: AppHandle) -> Result<Vec<ConnectedAccount>, MailError> {
+    database(&app, |db, _| storage::list_accounts(db)).await
+}
+
+#[tauri::command]
+pub async fn switch_connected_account(
+    app: AppHandle,
+    account_id: AccountId,
+) -> Result<Inbox, MailError> {
+    database(&app, move |db, _| storage::select_account(db, account_id)).await
+}
+
+#[tauri::command]
 pub async fn connect_imap_account(
     app: AppHandle,
     operations: State<'_, MailOperations>,
@@ -259,29 +323,29 @@ pub async fn connect_imap_account(
     outgoing: SmtpSettings,
     password: String,
 ) -> Result<Inbox, MailError> {
-    let password = Zeroizing::new(password);
+    let auth = MailAuth::Password(Zeroizing::new(password));
+    let password = auth.secret();
     let account = account.validated()?;
     let outgoing = outgoing.validated(&account.email)?;
     if password.is_empty() || password.len() > 1024 || password.chars().any(char::is_control) {
         return Err(MailError::InvalidSettings);
     }
     let _operation = operations.0.lock().await;
-    if database(&app, |db, _| storage::account(db))
+    let email = account.email.clone();
+    if database(&app, move |db, _| storage::find_account(db, &email))
         .await?
         .is_some()
     {
         return Err(MailError::AlreadyConnected);
     }
     setup_diagnostics::record(format_args!("imap start"));
-    let headers = imap::inbox(&account, &password)
-        .await
-        .inspect_err(|error| {
-            setup_diagnostics::record(format_args!("imap failed category={error:?}"));
-        })?;
+    let headers = imap::inbox(&account, &auth).await.inspect_err(|error| {
+        setup_diagnostics::record(format_args!("imap failed category={error:?}"));
+    })?;
     setup_diagnostics::record(format_args!("imap ok"));
-    smtp::verify(&outgoing, &account.email, &password).await?;
+    smtp::verify(&outgoing, &account.email, &auth).await?;
     let result = database(&app, move |db, directory| {
-        storage::save_new_account(db, directory, account, &outgoing, &password, headers)
+        storage::save_new_account(db, directory, account, &outgoing, auth.secret(), headers)
     })
     .await;
     setup_diagnostics::record(format_args!("storage ok={}", result.is_ok()));
@@ -289,33 +353,74 @@ pub async fn connect_imap_account(
 }
 
 #[tauri::command]
+pub async fn connect_gmail_account(
+    app: AppHandle,
+    operations: State<'_, MailOperations>,
+    email: String,
+    reconnect_account_id: Option<AccountId>,
+) -> Result<Inbox, MailError> {
+    let _operation = operations.0.lock().await;
+    let requested_email = email.trim().to_owned();
+    let existing = database(&app, move |db, _| {
+        storage::find_account(db, &requested_email)
+    })
+    .await?;
+    match (&existing, reconnect_account_id) {
+        (Some(account), Some(id)) if account.id == id => {}
+        (Some(_), _) => return Err(MailError::AlreadyConnected),
+        (None, Some(_)) => return Err(MailError::NoAccount),
+        (None, None) => {}
+    }
+    let authorized = gmail::authorize(email.trim()).await?;
+    let email = existing.map_or(authorized.email, |account| account.email);
+    let (account, outgoing) = discovery::gmail_servers(&email);
+    let auth = MailAuth::OAuth(authorized.access.value.clone());
+    let headers = imap::inbox(&account, &auth).await?;
+    smtp::verify(&outgoing, &account.email, &auth).await?;
+    let refresh = authorized.refresh;
+    let save = database(&app, move |db, _| {
+        storage::save_gmail_account(db, account, reconnect_account_id, headers, |email| {
+            gmail::store_refresh(email, &refresh)
+        })
+    });
+    app.state::<GmailSession>()
+        .save_authorized(email, authorized.access, save)
+        .await
+}
+
+#[tauri::command]
 pub async fn refresh_connected_inbox(
     app: AppHandle,
     operations: State<'_, MailOperations>,
+    account_id: AccountId,
 ) -> Result<Inbox, MailError> {
     let _operation = operations.0.lock().await;
-    let (account, password) = stored_connection(&app).await?;
-    let headers = imap::inbox(&account, &password).await?;
+    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    let headers = imap::inbox(&account, &auth).await?;
     database(&app, move |db, _| {
-        storage::update_snapshot(db, account, headers)
+        storage::update_snapshot(db, account_id, headers)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn list_connected_folders(app: AppHandle) -> Result<Vec<MailFolder>, MailError> {
-    let (account, password) = stored_connection(&app).await?;
-    imap::folders(&account, &password).await
+pub async fn list_connected_folders(
+    app: AppHandle,
+    account_id: AccountId,
+) -> Result<Vec<MailFolder>, MailError> {
+    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    imap::folders(&account, &auth).await
 }
 
 #[tauri::command]
 pub async fn read_connected_folder(
     app: AppHandle,
+    account_id: AccountId,
     folder: String,
 ) -> Result<Vec<MailHeader>, MailError> {
     validate_folder(&folder)?;
-    let (account, password) = stored_connection(&app).await?;
-    imap::folder(&account, &password, &folder).await
+    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    imap::folder(&account, &auth, &folder).await
 }
 
 fn validate_folder(folder: &str) -> Result<(), MailError> {
@@ -325,41 +430,51 @@ fn validate_folder(folder: &str) -> Result<(), MailError> {
     Ok(())
 }
 
-async fn stored_connection(app: &AppHandle) -> Result<(Account, Zeroizing<String>), MailError> {
-    database(app, |db, directory| {
-        storage::connection_details(db, directory, Account::legacy_credential)
+async fn stored_connection(
+    app: &AppHandle,
+    account_id: AccountId,
+    inbox_key: Option<MessageKey>,
+) -> Result<(Account, MailAuth), MailError> {
+    let (account, password) = database(app, move |db, directory| {
+        let account = storage::account(db, account_id)?.ok_or(MailError::NoAccount)?;
+        if let Some(key) = inbox_key {
+            if !storage::contains_message(db, account_id, key)? {
+                return Err(MailError::MessageMissing);
+            }
+        }
+        if account.uses_gmail_oauth() {
+            return Ok((discovery::gmail_servers(&account.email).0, None));
+        }
+        let (account, password) =
+            storage::connection_details(db, directory, account_id, Account::legacy_credential)?;
+        Ok((account, Some(password)))
     })
-    .await
+    .await?;
+    let auth = match password {
+        Some(password) => MailAuth::Password(password),
+        None => MailAuth::OAuth(app.state::<GmailSession>().access(&account.email).await?),
+    };
+    Ok((account, auth))
 }
 
 #[tauri::command]
 pub async fn read_connected_message(
     app: AppHandle,
     operations: State<'_, MailOperations>,
+    account_id: AccountId,
     folder: String,
     key: MessageKey,
 ) -> Result<OpenedMessage, MailError> {
     validate_folder(&folder)?;
     let _operation = operations.0.lock().await;
     let is_inbox = folder.eq_ignore_ascii_case("INBOX");
-    let (account, password) = if is_inbox {
-        database(&app, move |db, directory| {
-            if storage::account(db)?.is_none() {
-                return Err(MailError::NoAccount);
-            }
-            if !storage::contains_message(db, key)? {
-                return Err(MailError::MessageMissing);
-            }
-            storage::connection_details(db, directory, Account::legacy_credential)
-        })
-        .await?
-    } else {
-        stored_connection(&app).await?
-    };
-    let message = imap::message(&account, &password, &folder, key).await?;
-    if is_inbox && message.seen {
+    let (account, auth) = stored_connection(&app, account_id, is_inbox.then_some(key)).await?;
+    let message = imap::message(&account, &auth, &folder, key).await?;
+    if is_inbox && (message.seen || !message.attachments.is_empty()) {
+        let seen = message.seen;
+        let has_attachments = !message.attachments.is_empty();
         let _ = database(&app, move |db, _| {
-            storage::apply_cached_action(db, key, MessageAction::Read)
+            storage::record_opened_message(db, account_id, key, seen, has_attachments)
         })
         .await;
     }
@@ -367,23 +482,93 @@ pub async fn read_connected_message(
 }
 
 #[tauri::command]
+pub async fn download_connected_attachment(
+    app: AppHandle,
+    account_id: AccountId,
+    folder: String,
+    key: MessageKey,
+    part: Vec<u32>,
+) -> Result<attachments::DownloadResult, MailError> {
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|_| MailError::AttachmentSave)?;
+    let (attachment, bytes) =
+        get_connected_attachment(&app, account_id, &folder, key, part).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        attachments::save_download(&downloads, &attachment, &bytes, attachments::launch)
+    })
+    .await
+    .map_err(|_| MailError::AttachmentSave)?
+}
+
+#[tauri::command]
+pub async fn open_connected_attachment(
+    app: AppHandle,
+    account_id: AccountId,
+    folder: String,
+    key: MessageKey,
+    part: Vec<u32>,
+) -> Result<(), MailError> {
+    let (attachment, bytes) =
+        get_connected_attachment(&app, account_id, &folder, key, part).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AttachmentPreviews>().open(&attachment, &bytes)
+    })
+    .await
+    .map_err(|_| MailError::AttachmentOpen)?
+}
+
+async fn get_connected_attachment(
+    app: &AppHandle,
+    account_id: AccountId,
+    folder: &str,
+    key: MessageKey,
+    part: Vec<u32>,
+) -> Result<(attachments::Attachment, Vec<u8>), MailError> {
+    validate_folder(folder)?;
+    if key.uid_validity == 0
+        || key.uid == 0
+        || part.is_empty()
+        || part.len() > attachments::MAX_PART_DEPTH
+        || part.contains(&0)
+    {
+        return Err(MailError::AttachmentUnavailable);
+    }
+    let (account, auth) = stored_connection(app, account_id, None).await?;
+    imap::download_attachment(&account, &auth, folder, key, part).await
+}
+
+#[tauri::command]
 pub async fn send_connected_message(
     app: AppHandle,
     operations: State<'_, MailOperations>,
+    account_id: AccountId,
     message: OutgoingMessage,
 ) -> Result<(), MailError> {
     let _operation = operations.0.lock().await;
-    let (email, settings, password) = database(&app, |db, directory| {
-        storage::outgoing_connection(db, directory)
+    let (email, settings, password) = database(&app, move |db, directory| {
+        let account = storage::account(db, account_id)?.ok_or(MailError::NoAccount)?;
+        if account.uses_gmail_oauth() {
+            let outgoing = discovery::gmail_servers(&account.email).1;
+            return Ok((account.email, outgoing, None));
+        }
+        let (email, settings, password) = storage::outgoing_connection(db, directory, account_id)?;
+        Ok((email, settings, Some(password)))
     })
     .await?;
-    smtp::send(&settings, &email, &password, message).await
+    let auth = match password {
+        Some(password) => MailAuth::Password(password),
+        None => MailAuth::OAuth(app.state::<GmailSession>().access(&email).await?),
+    };
+    smtp::send(&settings, &email, &auth, message).await
 }
 
 #[tauri::command]
 pub async fn update_connected_message(
     app: AppHandle,
     operations: State<'_, MailOperations>,
+    account_id: AccountId,
     folder: String,
     key: MessageKey,
     action: MessageAction,
@@ -393,16 +578,54 @@ pub async fn update_connected_message(
         return Err(MailError::MessageMissing);
     }
     let _operation = operations.0.lock().await;
-    let (account, password) = stored_connection(&app).await?;
-    imap::apply_action(&account, &password, &folder, key, action).await?;
+    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    imap::apply_action(&account, &auth, &folder, key, action).await?;
     if folder.eq_ignore_ascii_case("INBOX") {
         // The server already accepted the action. A cache error must not prompt a retry.
         let _ = database(&app, move |db, _| {
-            storage::apply_cached_action(db, key, action)
+            storage::apply_cached_action(db, account_id, key, action)
         })
         .await;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn update_connected_messages(
+    app: AppHandle,
+    operations: State<'_, MailOperations>,
+    account_id: AccountId,
+    folder: String,
+    keys: Vec<MessageKey>,
+    action: MessageAction,
+) -> Result<BatchActionResult, MailError> {
+    validate_folder(&folder)?;
+    let first = keys.first().ok_or(MailError::InvalidSettings)?;
+    let mut unique = std::collections::HashSet::new();
+    if keys.len() > imap::WINDOW_SIZE as usize
+        || first.uid_validity == 0
+        || keys.iter().any(|key| {
+            key.uid == 0 || key.uid_validity != first.uid_validity || !unique.insert(key.uid)
+        })
+    {
+        return Err(MailError::InvalidSettings);
+    }
+    let _operation = operations.0.lock().await;
+    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    let result = imap::apply_batch(&account, &auth, &folder, &keys, action).await?;
+    if folder.eq_ignore_ascii_case("INBOX") && !result.updated.is_empty() {
+        let updated = result.updated.clone();
+        // A cache failure must not turn a confirmed server operation into a retry.
+        let _ = database(&app, move |db, _| {
+            let transaction = db.transaction().map_err(|_| MailError::Storage)?;
+            for key in updated {
+                storage::apply_cached_action(&transaction, account_id, key, action)?;
+            }
+            transaction.commit().map_err(|_| MailError::Storage)
+        })
+        .await;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

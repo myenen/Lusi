@@ -1,10 +1,12 @@
 mod autoconfig;
+mod providers;
 
-use super::{smtp::SmtpSettings, validate_address, Account, MailError};
+use super::{address_domain, smtp::SmtpSettings, validate_address, Account, MailError};
 use hickory_resolver::{
     proto::rr::{rdata::SRV, RData},
     TokioResolver,
 };
+pub(super) use providers::{gmail_servers, is_gmail_domain, OAuthProvider};
 use rand::{seq::SliceRandom, RngExt};
 use serde::Serialize;
 use std::time::Duration;
@@ -21,13 +23,18 @@ pub struct DiscoveredImap {
     start_tls: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     outgoing: Option<SmtpSettings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_provider: Option<OAuthProvider>,
 }
 
 #[tauri::command]
 pub async fn discover_imap_settings(email: String) -> Result<Option<DiscoveredImap>, MailError> {
     let email = email.trim();
+    let domain = address_domain(email)?;
+    if let Some(settings) = providers::preset(email, domain) {
+        return Ok(Some(settings));
+    }
     validate_address(email)?;
-    let (_, domain) = email.split_once('@').ok_or(MailError::InvalidSettings)?;
     let domain = domain.to_ascii_lowercase();
     if let Some(settings) = autoconfig::discover(email, &domain).await? {
         return Ok(Some(settings));
@@ -121,6 +128,7 @@ fn select_server<'a>(
             username: None,
             start_tls: false,
             outgoing: None,
+            oauth_provider: None,
         })
     }))
 }
@@ -131,6 +139,42 @@ mod tests {
 
     fn server(priority: u16, host: &str, port: u16) -> SRV {
         SRV::new(priority, 0, port, host.parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn discovers_gmail_and_googlemail_before_password_discovery() {
+        for email in ["mail@gmail.com", "Mail+test@GOOGLEMAIL.COM"] {
+            let settings = discover_imap_settings(format!(" {email} "))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(settings.host, "imap.gmail.com");
+            assert_eq!(settings.port, 993);
+            assert!(!settings.start_tls && !settings.needs_confirmation);
+            assert_eq!(settings.username.as_deref(), Some(email));
+            assert_eq!(settings.oauth_provider, Some(OAuthProvider::Gmail));
+            assert_eq!(
+                settings.outgoing,
+                Some(SmtpSettings {
+                    host: "smtp.gmail.com".into(),
+                    port: 465,
+                    username: Some(email.into()),
+                    start_tls: false,
+                })
+            );
+            assert_eq!(validate_address(email), Err(MailError::OAuthRequired));
+        }
+        assert!(
+            providers::preset("mail@gmail.com.example.test", "gmail.com.example.test").is_none()
+        );
+        assert_eq!(
+            discover_imap_settings("@gmail.com".into()).await,
+            Err(MailError::InvalidSettings)
+        );
+        assert_eq!(
+            discover_imap_settings("mail@outlook.com".into()).await,
+            Err(MailError::OAuthRequired)
+        );
     }
 
     #[test]
@@ -149,6 +193,7 @@ mod tests {
                 username: None,
                 start_tls: false,
                 outgoing: None,
+                oauth_provider: None,
             })),
         );
     }

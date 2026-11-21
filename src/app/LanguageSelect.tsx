@@ -1,6 +1,6 @@
 import { Languages } from 'lucide-react';
 import { useLabels, type LanguagePreference } from './i18n';
-import { PreferenceSelect } from './PreferenceSelect';
+import { SelectBox } from '../components/ui/SelectBox';
 
 export function LanguageSelect({ value, onChange, disabled }: {
   value: LanguagePreference;
@@ -10,8 +10,8 @@ export function LanguageSelect({ value, onChange, disabled }: {
   const labels = useLabels();
 
   return (
-    <PreferenceSelect<LanguagePreference>
-      className="language-picker"
+    <SelectBox<LanguagePreference>
+      className="preference-select"
       label={labels.language}
       icon={Languages}
       value={value}

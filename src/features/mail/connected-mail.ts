@@ -12,6 +12,7 @@ export interface MessageRow {
   tone: typeof avatarTones[number];
   unread: boolean;
   starred: boolean;
+  hasAttachments: boolean;
 }
 
 type Labels = ReturnType<typeof useLabels>;
@@ -46,5 +47,6 @@ function connectedMessageRow(header: ImapHeader, date: Intl.DateTimeFormat, labe
     tone: avatarTones[(sender.codePointAt(0) ?? 0) % avatarTones.length],
     unread: header.unread,
     starred: header.starred,
+    hasAttachments: Boolean(header.hasAttachments),
   };
 }

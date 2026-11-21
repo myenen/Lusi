@@ -4,8 +4,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { IconButton, type Filter } from '../components/ui/Controls';
 import { AccountSetup } from '../features/accounts/AccountSetup';
 import {
-  imapErrorMessage, inboxFolder, listConnectedFolders, loadConnectedInbox, readConnectedFolder,
-  refreshConnectedInbox, updateConnectedMessage, type ConnectedInbox, type ImapHeader, type MessageAction, type MessageKey, type OpenedMessage,
+  imapErrorMessage, inboxFolder, listConnectedAccounts, listConnectedFolders, loadConnectedInbox, readConnectedFolder,
+  refreshConnectedInbox, switchConnectedAccount, updateConnectedMessage, updateConnectedMessages,
+  type ConnectedAccount, type ConnectedInbox, type ImapHeader, type MessageAction, type MessageKey, type OpenedMessage,
 } from '../features/accounts/imap-api';
 import { Composer, emptyDraft, type ComposeMode, type Draft, type ResponseMode } from '../features/mail/Composer';
 import { ConnectedMessageBody } from '../features/mail/ConnectedMessageBody';
@@ -13,7 +14,7 @@ import { connectedMessageId, connectedMessageRows, folderDisplayName } from '../
 import { MailList } from '../features/mail/MailList';
 import { MessageReader } from '../features/mail/MessageReader';
 import { Sidebar } from '../features/mail/Sidebar';
-import { ConnectedAccount } from '../features/mail/SidebarAccount';
+import { SidebarAccount } from '../features/mail/SidebarAccount';
 import { useMailSounds } from '../features/mail/send-sound';
 import { SettingsDrawer } from '../features/settings/SettingsDrawer';
 import { catalog, LocaleContext } from './i18n';
@@ -24,10 +25,12 @@ import { useUiPreferences } from './ui-preferences';
 
 const hasMacTitleBar = /\bMacintosh\b/.test(navigator.userAgent) && navigator.maxTouchPoints < 2;
 const folderOrder = ['inbox', 'flagged', 'sent', 'drafts', 'archive', 'trash', 'junk', 'all', 'custom'];
+const noDrafts: Record<string, Draft> = {};
 
 export function App() {
   const desktop = isTauri();
   const [inbox, setInbox] = useState<ConnectedInbox | null | undefined>(() => desktop ? undefined : null);
+  const [accountDrafts, setAccountDrafts] = useState<Record<number, Record<string, Draft>>>({});
   const [accountLoadFailed, setAccountLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const ui = useUiPreferences();
@@ -65,8 +68,14 @@ export function App() {
           </div>
         </main>}
         {ready && inbox !== undefined && (inbox
-          ? <MailboxWorkspace ui={ui} themeId={themeId} colorScheme={colorScheme}
-            inbox={inbox} onRefresh={setInbox} />
+          ? <MailboxWorkspace key={inbox.accountId} ui={ui} themeId={themeId} colorScheme={colorScheme}
+            inbox={inbox} onAccountChanged={setInbox}
+            onRefresh={(update) => setInbox((current) => current?.accountId === inbox.accountId
+              ? (typeof update === 'function' ? update(current) : update) : current)}
+            drafts={accountDrafts[inbox.accountId] ?? noDrafts}
+            setDrafts={(update) => setAccountDrafts((current) => ({
+              ...current, [inbox.accountId]: update(current[inbox.accountId] ?? noDrafts),
+            }))} />
           : <AccountSetup hasMacTitleBar={hasMacTitleBar} desktop={desktop}
             onConnected={setInbox} />)}
         {error && <p className="preference-error" role="status">{labels.preferenceErrors[error]}</p>}
@@ -75,15 +84,23 @@ export function App() {
   );
 }
 
-function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
+function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, onRefresh, drafts, setDrafts }: {
   ui: ReturnType<typeof useUiPreferences>;
   themeId: string;
   colorScheme: 'light' | 'dark';
   inbox: ConnectedInbox;
-  onRefresh: Dispatch<SetStateAction<ConnectedInbox | null | undefined>>;
+  onAccountChanged: (inbox: ConnectedInbox) => void;
+  onRefresh: Dispatch<SetStateAction<ConnectedInbox>>;
+  drafts: Record<string, Draft>;
+  setDrafts: (update: (current: Record<string, Draft>) => Record<string, Draft>) => void;
 }) {
   const { preferences, locale, update } = ui;
   const labels = catalog[locale];
+  const accountId = inbox.accountId;
+  const [accounts, setAccounts] = useState<ConnectedAccount[]>();
+  const [accountsLoadFailed, setAccountsLoadFailed] = useState(false);
+  const [accountsAttempt, setAccountsAttempt] = useState(0);
+  const [quickSwitching, setQuickSwitching] = useState(false);
   const [folders, setFolders] = useState([inboxFolder]);
   const [folder, setFolder] = useState(inboxFolder.id);
   const [folderError, setFolderError] = useState<unknown>();
@@ -91,22 +108,24 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
   const [foldersAttempt, setFoldersAttempt] = useState(0);
   const [folderResult, setFolderResult] = useState<{ folder: string; headers: ImapHeader[] } | { folder: string; error: unknown }>();
   const [folderAttempt, setFolderAttempt] = useState(0);
+  const [folderRefreshing, setFolderRefreshing] = useState(false);
+  const [readerAttempt, setReaderAttempt] = useState(0);
   const [inboxRefreshing, setInboxRefreshing] = useState(false);
   const [inboxError, setInboxError] = useState<unknown>();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [oldestFirst, setOldestFirst] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
+  const [selection, setSelection] = useState<Set<string>>();
   const [mobilePane, setMobilePane] = useState<'list' | 'reader'>('list');
   const [showFolders, setShowFolders] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composer, setComposer] = useState<{ id: string; mode: ComposeMode }>();
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [opened, setOpened] = useState<{ id: string; message: OpenedMessage }>();
-  const [notice, setNotice] = useState<'sent' | 'archive' | 'trash' | 'restore'>();
+  const [notice, setNotice] = useState<'sent' | 'archive' | 'trash' | 'restore' | { count: number } | { switchError: unknown }>();
   const [flight, setFlight] = useState(0);
   const [actionBusy, setActionBusy] = useState(false);
-  const [actionError, setActionError] = useState<{ folder: string; error: unknown }>();
+  const [actionError, setActionError] = useState<{ folder: string; source: 'list' | 'reader'; error: unknown }>();
   const pendingAction = useRef(false);
   const composeTrigger = useRef<HTMLElement>(null);
   const sounds = useMailSounds();
@@ -117,6 +136,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
   const messageTrigger = useRef<HTMLButtonElement>(null);
   const readerHeading = useRef<HTMLHeadingElement>(null);
 
+  const savedAccounts = accounts ?? [{ id: accountId, email: inbox.email }];
   const isInbox = folder === inboxFolder.id;
   const result = folderResult?.folder === folder ? folderResult : undefined;
   const headers = isInbox ? inbox.headers : result && 'headers' in result ? result.headers : [];
@@ -139,18 +159,33 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
   const visiblePane = selected ? mobilePane : 'list';
   const currentFolder = folders.find(({ id }) => id === folder);
   const hasOtherFolder = (kind: 'archive' | 'trash') => folders.some((entry) => entry.kind === kind && entry.id !== folder);
-  const noticeText = notice === 'sent' ? labels.messageSent : notice === 'archive' ? labels.messageArchived :
+  const inTrash = currentFolder?.kind === 'trash';
+  const canArchive = !inTrash && hasOtherFolder('archive');
+  const canTrash = hasOtherFolder('trash');
+  const switchFailed = typeof notice === 'object' && 'switchError' in notice;
+  const noticeText = typeof notice === 'object'
+    ? 'count' in notice ? labels.bulkUpdated(notice.count) : imapErrorMessage(notice.switchError, labels.imapErrors) :
+    notice === 'sent' ? labels.messageSent : notice === 'archive' ? labels.messageArchived :
     notice === 'trash' ? labels.messageTrashed : notice === 'restore' ? labels.messageRestored : undefined;
 
   useEffect(() => {
+    let current = true;
+    listConnectedAccounts().then(
+      (result) => { if (current) setAccounts(result); },
+      () => { if (current) setAccountsLoadFailed(true); },
+    );
+    return () => { current = false; };
+  }, [accountsAttempt]);
+
+  useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(undefined), 3600);
+    const timer = window.setTimeout(() => setNotice(undefined), switchFailed ? 7000 : 3600);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [notice, switchFailed]);
 
   useEffect(() => {
     let current = true;
-    listConnectedFolders().then((result) => {
+    listConnectedFolders(accountId).then((result) => {
       if (!current) return;
       const list = result.some(({ id }) => id === inboxFolder.id) ? result : [inboxFolder, ...result];
       setFolders(list.sort((first, second) => folderOrder.indexOf(first.kind) - folderOrder.indexOf(second.kind)
@@ -162,20 +197,21 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
       setFoldersLoading(false);
     });
     return () => { current = false; };
-  }, [foldersAttempt]);
+  }, [accountId, foldersAttempt]);
 
   useEffect(() => {
     if (isInbox) return;
     let current = true;
-    readConnectedFolder(folder).then(
+    readConnectedFolder(accountId, folder).then(
       (headers) => { if (current) setFolderResult({ folder, headers }); },
       (error: unknown) => { if (current) setFolderResult({ folder, error: error ?? 'unknown' }); },
-    );
+    ).finally(() => { if (current) setFolderRefreshing(false); });
     return () => { current = false; };
-  }, [folder, folderAttempt, isInbox]);
+  }, [accountId, folder, folderAttempt, isInbox]);
 
   function refresh() {
     if (busy || pendingAction.current) return;
+    if (selection) setSelection(new Set());
     setActionError(undefined);
     if (!foldersLoading) {
       setFolderError(undefined);
@@ -183,19 +219,21 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
       setFoldersAttempt((attempt) => attempt + 1);
     }
     if (!isInbox) {
+      setFolderRefreshing(true);
       setFolderResult(undefined);
       setFolderAttempt((attempt) => attempt + 1);
       return;
     }
     setInboxRefreshing(true);
     setInboxError(undefined);
-    void refreshConnectedInbox().then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'))
+    void refreshConnectedInbox(accountId).then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'))
       .finally(() => setInboxRefreshing(false));
   }
 
-  function applyHeaderAction(source: string, key: MessageKey, action: MessageAction) {
+  function applyHeaderActions(source: string, keys: MessageKey[], action: MessageAction) {
+    const updatedIds = new Set(keys.map(connectedMessageId));
     const updateHeaders = (headers: ImapHeader[]) => headers.flatMap((header) => {
-      if (header.key.uid !== key.uid || header.key.uidValidity !== key.uidValidity) return [header];
+      if (!updatedIds.has(connectedMessageId(header.key))) return [header];
       switch (action) {
         case 'read': return [{ ...header, unread: false }];
         case 'unread': return [{ ...header, unread: true }];
@@ -204,34 +242,55 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
         default: return [];
       }
     });
+    patchHeaders(source, updateHeaders);
+  }
+
+  function patchHeaders(source: string, updateHeaders: (headers: ImapHeader[]) => ImapHeader[]) {
     if (source === inboxFolder.id) {
-      onRefresh((current) => current && { ...current, headers: updateHeaders(current.headers) });
+      onRefresh((current) => ({ ...current, headers: updateHeaders(current.headers) }));
     } else {
       setFolderResult((current) => current?.folder === source && 'headers' in current
         ? { folder: source, headers: updateHeaders(current.headers) } : current);
     }
   }
 
-  async function handleAction(action: MessageAction) {
-    if (pendingAction.current || busy || !selectedHeader) return;
-    const key = selectedHeader.key;
+  async function handleAction(action: MessageAction, source: 'list' | 'reader', key?: MessageKey) {
+    if (pendingAction.current || busy || (!key && !selection)) return;
+    const selectedIds = new Set(messages.filter((message) => selection?.has(message.id)
+      && (action !== 'read' || message.unread) && (action !== 'unread' || !message.unread)).map(({ id }) => id));
+    const keys = key ? [key] : headers.filter((header) => selectedIds.has(connectedMessageId(header.key))).map((header) => header.key);
+    if (!keys.length) return;
     const isMove = action === 'archive' || action === 'trash' || action === 'restore';
     pendingAction.current = true;
     setActionBusy(true);
     setActionError(undefined);
     if (action === 'archive' || action === 'trash') sounds.prepare();
     try {
-      await updateConnectedMessage(folder, key, action);
-      applyHeaderAction(folder, key, action);
-      if (isMove) {
+      let updated = keys;
+      if (key) {
+        await updateConnectedMessage(accountId, folder, key, action);
+      } else {
+        const result = await updateConnectedMessages(accountId, folder, keys, action);
+        updated = result.updated;
+        if (result.error) setActionError({ folder, source, error: result.error });
+      }
+      if (!updated.length) return;
+      applyHeaderActions(folder, updated, action);
+      if (!key) {
+        const updatedIds = new Set<string>(updated.map(connectedMessageId));
+        setSelection((current) => current && current === selection ? new Set([...current].filter((id) => !updatedIds.has(id))) : current);
+        setNotice({ count: updated.length });
+      } else if (isMove) {
         setNotice(action);
+      }
+      if (isMove) {
         if (action === 'archive' || action === 'trash') void sounds.play(action);
         if (action === 'restore') {
-          await refreshConnectedInbox().then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'));
+          await refreshConnectedInbox(accountId).then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'));
         }
       }
     } catch (error) {
-      setActionError({ folder, error: error ?? 'unknown' });
+      setActionError({ folder, source, error: error ?? 'unknown' });
     } finally {
       pendingAction.current = false;
       setActionBusy(false);
@@ -326,7 +385,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
 
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
-      if (settingsOpen || composer) return;
+      if (event.defaultPrevented || settingsOpen || composer || document.activeElement?.closest('.mail-print-dialog')) return;
       if (showFolders && event.key === 'Escape') {
         event.preventDefault();
         closeFolders();
@@ -346,12 +405,31 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
     return () => window.removeEventListener('keydown', onShortcut);
   }, [composer, inbox.canSend, settingsOpen, showFolders]);
 
+  async function switchAccount(id: number) {
+    if (id !== accountId) onAccountChanged(await switchConnectedAccount(id));
+  }
+
+  async function quickSwitchAccount(id: number) {
+    if (quickSwitching || id === accountId) return;
+    setNotice(undefined);
+    setQuickSwitching(true);
+    try {
+      await switchAccount(id);
+    } catch (error) {
+      setNotice({ switchError: error ?? 'unknown' });
+    } finally {
+      setQuickSwitching(false);
+    }
+  }
+
   function chooseFolder(next: string) {
     if (next !== folder) {
       setActionError(undefined);
+      setFolderRefreshing(false);
       setFolderResult(undefined);
       setFolder(next);
       setSelectedId(undefined);
+      setSelection(undefined);
       setQuery('');
       setFilter('all');
     }
@@ -368,7 +446,10 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
         {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
         {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
         <Sidebar folder={folder} folders={folders} inboxUnread={inbox.headers.filter(({ unread }) => unread).length}
-          open={showFolders} collapsed={preferences.sidebarCollapsed} account={<ConnectedAccount email={inbox.email} />}
+          open={showFolders} collapsed={preferences.sidebarCollapsed} account={
+            <SidebarAccount accountId={accountId} email={inbox.email} accounts={savedAccounts}
+              disabled={quickSwitching || actionBusy} onSwitch={(id) => void quickSwitchAccount(id)} />
+          }
           onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
           onClose={closeFolders} onSelect={chooseFolder}
           canSend={inbox.canSend} onCompose={(trigger) => {
@@ -383,33 +464,62 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
         />
         <MailList title={currentFolder ? folderDisplayName(currentFolder, labels) : folder} messages={messages} selectedId={selected?.id}
           search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
-          oldestFirst={oldestFirst} onSort={setOldestFirst} onSearch={setQuery} onFilter={setFilter}
+          oldestFirst={oldestFirst} onSort={setOldestFirst}
+          onSearch={(value) => { setQuery(value); if (selection) setSelection(new Set()); }}
+          onFilter={(value) => { setFilter(value); if (value !== filter && selection) setSelection(new Set()); }}
+          selection={selection} onSelectionChange={setSelection} onBulkAction={(action) => void handleAction(action, 'list')}
           onToggleFolders={() => setShowFolders(!showFolders)}
           onSelect={(id, trigger) => {
             messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader');
           }}
-          busy={busy || actionBusy} onRefresh={refresh}
+          canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
+          onAction={(id, action) => {
+            const header = headers.find(({ key }) => connectedMessageId(key) === id);
+            if (header) void handleAction(action, 'list', header.key);
+          }}
+          busy={busy || actionBusy} refreshing={isInbox ? inboxRefreshing : folderRefreshing} onRefresh={refresh}
           status={busy ? <p className="mailbox-status" role="status">{labels.connectedInbox.refreshing}</p> :
-            failure !== undefined && <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p>}
+            failure !== undefined ? <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p> :
+              actionError?.folder === folder && actionError.source === 'list' &&
+                <p className="account-setup-error" role="alert">{imapErrorMessage(actionError.error, labels.imapErrors)}</p>}
           divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={false} onResize={(listWidth, save) => update({ listWidth }, save)} />}
         />
-        <MessageReader key={folder} message={selected} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
+        <MessageReader key={folder} message={selected} opened={openedMessage} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
           onRespond={respond} canRespond={canRespond} canForward={canForward}
-          onAction={(action) => void handleAction(action)} actionBusy={actionBusy || busy}
-          actionError={actionError?.folder === folder ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
-          canArchive={currentFolder?.kind !== 'trash' && hasOtherFolder('archive')}
-          canTrash={hasOtherFolder('trash')} inTrash={currentFolder?.kind === 'trash'}
-          body={selectedHeader && <ConnectedMessageBody key={connectedMessageId(selectedHeader.key)} folder={folder} messageKey={selectedHeader.key}
+          onAction={(action) => { if (selectedHeader) void handleAction(action, 'reader', selectedHeader.key); }} actionBusy={actionBusy || busy}
+          actionError={actionError?.folder === folder && actionError.source === 'reader' ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
+          canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
+          body={selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`} accountId={accountId} folder={folder} messageKey={selectedHeader.key}
             themeId={themeId} colorScheme={colorScheme}
-            onOpened={(message) => setOpened({ id: messageId, message })}
-            onSeen={(source, key) => applyHeaderAction(source, key, 'read')} />} />
+            onOpened={(message) => {
+              setOpened({ id: messageId, message });
+              if (message.attachments?.length && !selectedHeader.hasAttachments) {
+                patchHeaders(folder, (current) => current.map((header) => connectedMessageId(header.key) === selected?.id
+                  ? { ...header, hasAttachments: true } : header));
+              }
+            }}
+            onSeen={(source, key) => applyHeaderActions(source, [key], 'read')} />} />
         <IconButton ref={settingsTrigger} className="settings-trigger" label={labels.settings} icon={Settings}
           aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls={settingsOpen ? 'settings-drawer' : undefined}
-          disabled={showFolders} onClick={() => setSettingsOpen(true)} />
+          disabled={showFolders || quickSwitching} onClick={() => {
+            if (accountsLoadFailed) {
+              setAccountsLoadFailed(false);
+              setAccountsAttempt((attempt) => attempt + 1);
+            }
+            setSettingsOpen(true);
+          }} />
       </div>
-      {settingsOpen && <SettingsDrawer connectedEmail={inbox.email} preferences={preferences} themeId={themeId} onUpdate={update}
+      {settingsOpen && <SettingsDrawer accountId={accountId} connectedEmail={inbox.email} preferences={preferences} themeId={themeId} onUpdate={update} onAccountChanged={onAccountChanged}
+        accounts={savedAccounts} accountsLoadFailed={accountsLoadFailed} onAccountSwitch={switchAccount}
+        onGoogleReconnected={inbox.oauthProvider === 'gmail' ? (updated) => {
+          onRefresh(updated);
+          setInboxError(undefined);
+          setFoldersAttempt((attempt) => attempt + 1);
+          setFolderAttempt((attempt) => attempt + 1);
+          setReaderAttempt((attempt) => attempt + 1);
+        } : undefined}
         onClose={() => { setSettingsOpen(false); settingsTrigger.current?.focus(); }} />}
-      {composer && <Composer key={composer.id} mode={composer.mode} draft={drafts[composer.id] ?? emptyDraft}
+      {composer && <Composer key={composer.id} accountId={accountId} mode={composer.mode} draft={drafts[composer.id] ?? emptyDraft}
         onChange={(draft) => setDrafts((current) => ({ ...current, [composer.id]: draft }))}
         onClose={closeComposer} onSendStart={sounds.prepare}
         onSent={() => {
@@ -423,7 +533,9 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onRefresh }: {
           setFlight((value) => value + 1);
           void sounds.play('send');
         }} />}
-      {noticeText && <div className="mail-notice" role="status">{noticeText}</div>}
+      {(quickSwitching || noticeText) && <div className="mail-notice" role={switchFailed ? 'alert' : 'status'}>
+        {quickSwitching ? labels.switchingAccount : noticeText}
+      </div>}
       {flight > 0 && <span key={flight} className="send-bird" aria-hidden="true" />}
     </>
   );

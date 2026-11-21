@@ -1,7 +1,7 @@
 import { Palette } from 'lucide-react';
 import { useContext } from 'react';
 import { catalog, LocaleContext } from './i18n';
-import { PreferenceSelect } from './PreferenceSelect';
+import { SelectBox } from '../components/ui/SelectBox';
 import { themePresets } from './themes';
 
 export function ThemePresetSelect({ value, onChange, disabled }: {
@@ -13,7 +13,7 @@ export function ThemePresetSelect({ value, onChange, disabled }: {
   if (themePresets.length < 2) return null;
 
   return (
-    <PreferenceSelect
+    <SelectBox className="preference-select"
       label={catalog[locale].theme}
       icon={Palette}
       value={value}

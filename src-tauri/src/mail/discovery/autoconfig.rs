@@ -220,6 +220,7 @@ fn parse(xml: &str, email: &str, domain: &str) -> Result<Option<DiscoveredImap>,
                         username: account.username,
                         start_tls: account.start_tls,
                         outgoing: outgoing_settings(&provider.outgoing, email, local, domain)?,
+                        oauth_provider: None,
                     }))
                 }
                 Err(MailError::OAuthRequired) => oauth_required = true,
@@ -292,6 +293,7 @@ mod tests {
                 username: Some("mail".into()),
                 start_tls: false,
                 outgoing: None,
+                oauth_provider: None,
             }))
         );
     }

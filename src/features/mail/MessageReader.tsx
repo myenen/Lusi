@@ -1,9 +1,11 @@
-import { Archive, ArrowLeft, Forward, Mail, MailOpen, Reply, ReplyAll, RotateCcw, Star, Trash2 } from 'lucide-react';
-import type { ReactNode, RefObject } from 'react';
+import { ArrowLeft, Forward, Mail, Printer, Reply, ReplyAll } from 'lucide-react';
+import { useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, Toolbar } from '../../components/ui/Controls';
-import type { MessageAction } from '../accounts/imap-api';
+import type { MessageAction, OpenedMessage } from '../accounts/imap-api';
 import type { ResponseMode } from './Composer';
+import { MessageActions, type MessageActionAvailability } from './MessageActions';
+import { MessagePrintPreview } from './MessagePrintPreview';
 import type { MessageRow } from './connected-mail';
 
 const responseActions = [
@@ -12,8 +14,9 @@ const responseActions = [
   { mode: 'forward', Icon: Forward },
 ] as const;
 
-export function MessageReader({ message, body, headingRef, inert, onBack, onAction, actionBusy, actionError, canArchive, canTrash, inTrash, onRespond, canRespond, canForward }: {
+export function MessageReader({ message, opened, body, headingRef, inert, onBack, onAction, actionBusy, actionError, canArchive, canTrash, inTrash, onRespond, canRespond, canForward }: MessageActionAvailability & {
   message?: MessageRow;
+  opened?: OpenedMessage;
   body?: ReactNode;
   headingRef: RefObject<HTMLHeadingElement | null>;
   inert: boolean;
@@ -21,28 +24,23 @@ export function MessageReader({ message, body, headingRef, inert, onBack, onActi
   onAction: (action: MessageAction) => void;
   actionBusy: boolean;
   actionError?: string;
-  canArchive: boolean;
-  canTrash: boolean;
-  inTrash: boolean;
   onRespond: (mode: ResponseMode, trigger: HTMLButtonElement) => void;
   canRespond: boolean;
   canForward: boolean;
 }) {
   const labels = useLabels();
+  const printTrigger = useRef<HTMLButtonElement>(null);
+  const [printPreview, setPrintPreview] = useState<{ message: MessageRow; opened: OpenedMessage }>();
   return (
+    <>
     <main className="reader" aria-label={labels.reader} inert={inert} tabIndex={-1}>
       <header className="reader-toolbar">
         <IconButton className="reader-back" label={labels.backToMessages} icon={ArrowLeft} onClick={onBack} />
-        {message && <Toolbar label={labels.manageMessage} className="reader-actions">
-          <IconButton label={message.starred ? labels.removeStar : labels.addStar} icon={Star}
-            aria-pressed={Boolean(message.starred)} disabled={actionBusy} onClick={() => onAction(message.starred ? 'unstar' : 'star')} />
-          <IconButton label={message.unread ? labels.markRead : labels.markUnread} icon={message.unread ? MailOpen : Mail}
-            disabled={actionBusy} onClick={() => onAction(message.unread ? 'read' : 'unread')} />
-          <IconButton label={labels.archiveMessage} icon={Archive} disabled={actionBusy || !canArchive} onClick={() => onAction('archive')} />
-          {inTrash
-            ? <IconButton label={labels.restoreMessage} icon={RotateCcw} disabled={actionBusy} onClick={() => onAction('restore')} />
-            : <IconButton label={labels.moveToTrash} icon={Trash2} disabled={actionBusy || !canTrash} onClick={() => onAction('trash')} />}
-        </Toolbar>}
+        {message && <MessageActions message={message} className="reader-actions" showStar actionBusy={actionBusy}
+          canArchive={canArchive} canTrash={canTrash} inTrash={inTrash} onAction={onAction}>
+          <IconButton ref={printTrigger} icon={Printer} label={labels.printPreview} aria-haspopup="dialog"
+            disabled={!opened} onClick={() => { if (opened) setPrintPreview({ message, opened }); }} />
+        </MessageActions>}
       </header>
       {actionError && <p className="account-setup-error reader-action-error" role="alert">{actionError}</p>}
       {message ? (
@@ -72,5 +70,10 @@ export function MessageReader({ message, body, headingRef, inert, onBack, onActi
         </Toolbar>
       </footer>}
     </main>
+    {printPreview && <MessagePrintPreview {...printPreview} onClose={() => {
+      setPrintPreview(undefined);
+      printTrigger.current?.focus();
+    }} />}
+    </>
   );
 }

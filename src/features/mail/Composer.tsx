@@ -32,7 +32,8 @@ async function encodeFile(file: File) {
   return { name: file.name, data: btoa(chunks.join('')) };
 }
 
-export function Composer({ draft, mode, onChange, onClose, onSendStart, onSent }: {
+export function Composer({ accountId, draft, mode, onChange, onClose, onSendStart, onSent }: {
+  accountId: number;
   draft: Draft;
   mode: ComposeMode;
   onChange: (draft: Draft) => void;
@@ -92,7 +93,7 @@ export function Composer({ draft, mode, onChange, onClose, onSendStart, onSent }
     onSendStart();
     try {
       const attachments = await Promise.all(draft.files.map(encodeFile));
-      await sendConnectedMessage({
+      await sendConnectedMessage(accountId, {
         to, cc: splitAddresses(draft.cc), bcc: splitAddresses(draft.bcc),
         subject: draft.subject, body: draft.body, attachments,
         ...(draft.editor && { html: draft.editor.html }),

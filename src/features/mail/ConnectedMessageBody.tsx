@@ -3,8 +3,10 @@ import { LocaleContext, useLabels } from '../../app/i18n';
 import { imapErrorMessage, readConnectedMessage, type MessageKey, type OpenedMessage } from '../accounts/imap-api';
 import { HtmlMessageFrame } from './HtmlMessageFrame';
 import { MessageSummary } from './MessageSummary';
+import { MessageAttachments } from './MessageAttachments';
 
-export function ConnectedMessageBody({ folder, messageKey: { uidValidity, uid }, onSeen, onOpened, themeId, colorScheme }: {
+export function ConnectedMessageBody({ accountId, folder, messageKey: { uidValidity, uid }, onSeen, onOpened, themeId, colorScheme }: {
+  accountId: number;
   folder: string;
   messageKey: MessageKey;
   onSeen: (folder: string, key: MessageKey) => void;
@@ -21,7 +23,7 @@ export function ConnectedMessageBody({ folder, messageKey: { uidValidity, uid },
 
   useEffect(() => {
     let active = true;
-    readConnectedMessage(folder, { uidValidity, uid }).then(
+    readConnectedMessage(accountId, folder, { uidValidity, uid }).then(
       (message) => {
         if (!active) return;
         setReading(message);
@@ -31,7 +33,7 @@ export function ConnectedMessageBody({ folder, messageKey: { uidValidity, uid },
       (error: unknown) => { if (active) setReading({ error }); },
     );
     return () => { active = false; };
-  }, [folder, uidValidity, uid]);
+  }, [accountId, folder, uidValidity, uid]);
 
   if (!reading) return <p role="status">{labels.connectedInbox.reading}</p>;
   if ('error' in reading) return <p role="alert" className="account-setup-error">{imapErrorMessage(reading.error, labels.imapErrors)}</p>;
@@ -39,6 +41,9 @@ export function ConnectedMessageBody({ folder, messageKey: { uidValidity, uid },
   return <>
     {reading.seenError && <p role="status" className="account-setup-error">{labels.connectedInbox.seenFailed}</p>}
     {reading.summary?.points?.length ? <MessageSummary summary={reading.summary} /> : null}
+    {reading.attachments?.length ? <MessageAttachments attachments={reading.attachments} accountId={accountId}
+      folder={folder} messageKey={{ uidValidity, uid }} /> : null}
+    {reading.bodyTruncated && <p className="mailbox-status" role="status">{labels.bodyTruncated}</p>}
     {html && reading.body && <div className="message-html-controls">
       <button type="button" className="text-button" onClick={() => setShowPlain(!showPlain)}>
         {showPlain ? labels.connectedInbox.showHtml : labels.connectedInbox.showPlain}

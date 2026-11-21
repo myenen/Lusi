@@ -1,15 +1,24 @@
-import { ArrowLeft, ArrowRight } from 'lucide-react';
-import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowLeft, ArrowRight, X } from 'lucide-react';
+import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { useLabels } from '../../app/i18n';
-import { checkImapSettings, connectImapAccount, discoverImapSettings, imapErrorMessage, type ConnectedInbox, type DiscoveredImap } from './imap-api';
+import { IconButton } from '../../components/ui/Controls';
+import { SelectBox } from '../../components/ui/SelectBox';
+import { checkImapSettings, connectGmailAccount, connectImapAccount, discoverImapSettings, imapErrorMessage, type ConnectedInbox, type DiscoveredImap } from './imap-api';
 
-type SetupStep = 'email' | 'server' | 'password';
+type SetupStep = 'email' | 'server' | 'password' | 'oauth';
 const connectionFailures = new Set<unknown>(['network', 'tls', 'timeout', 'inbox', 'smtpTls', 'smtpUnavailable']);
+const tls = { value: 'tls', label: 'SSL/TLS' } as const;
+const starttls = { value: 'starttls', label: 'STARTTLS' } as const;
 
-export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
-  hasMacTitleBar: boolean;
+function discoveredUsername(host: string, settings?: { host: string; username?: string }) {
+  return settings && settings.host.toLowerCase() === host.toLowerCase() ? settings.username?.trim() : undefined;
+}
+
+export function AccountSetup({ hasMacTitleBar, desktop, onConnected, onClose }: {
+  hasMacTitleBar?: boolean;
   desktop: boolean;
   onConnected: (inbox: ConnectedInbox) => void;
+  onClose?: () => void;
 }) {
   const { accountSetup: labels, imapErrors } = useLabels();
   const [step, setStep] = useState<SetupStep>('email');
@@ -17,12 +26,11 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('993');
   const [startTls, setStartTls] = useState(false);
-  const [username, setUsername] = useState('');
   const [smtpHost, setSmtpHost] = useState('');
   const [smtpPort, setSmtpPort] = useState('587');
   const [smtpStartTls, setSmtpStartTls] = useState(true);
-  const [smtpUsername, setSmtpUsername] = useState('');
   const [discovery, setDiscovery] = useState<DiscoveredImap | null>();
+  const discoveredSettings = useRef<DiscoveredImap | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState<unknown>();
   const [busy, setBusy] = useState(false);
@@ -30,7 +38,17 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
   const passwordInput = useRef<HTMLInputElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const emailInput = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const headingId = useId();
   const passwordBlocked = !desktop || (discovery?.needsConfirmation === true && !confirmed);
+
+  useLayoutEffect(() => {
+    const panel = dialog.current;
+    if (!panel) return;
+    panel.showModal();
+    emailInput.current?.focus();
+    return () => { if (panel.open) panel.close(); };
+  }, []);
 
   useLayoutEffect(() => {
     if (step !== 'email') heading.current?.focus();
@@ -50,20 +68,24 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending.current || (step === 'password' && passwordBlocked)) return;
+    if (pending.current || (step === 'oauth' && !desktop) || (step === 'password' && passwordBlocked)) return;
     pending.current = true;
     setBusy(true);
     setFailure(undefined);
+    const username = discoveredUsername(host.trim(), discoveredSettings.current ?? undefined);
+    const smtpUsername = discoveredUsername(smtpHost.trim(), discoveredSettings.current?.outgoing);
     const account = {
       email: email.trim(), host: host.trim(), port: Number(port),
-      ...(startTls ? { startTls: true } : {}), ...(username.trim() ? { username: username.trim() } : {}),
+      ...(startTls ? { startTls: true } : {}), ...(username ? { username } : {}),
     };
     const outgoing = {
       host: smtpHost.trim(), port: Number(smtpPort), startTls: smtpStartTls,
-      ...(smtpUsername.trim() ? { username: smtpUsername.trim() } : {}),
+      ...(smtpUsername ? { username: smtpUsername } : {}),
     };
     try {
-      if (step === 'password') {
+      if (step === 'oauth') {
+        onConnected(await connectGmailAccount(account.email));
+      } else if (step === 'password') {
         const input = passwordInput.current;
         if (!input?.value) return;
         const password = input.value;
@@ -77,21 +99,20 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
         setStep('password');
       } else {
         const found = desktop ? await discoverImapSettings(account.email) : null;
+        discoveredSettings.current = found;
         setDiscovery(found);
         setConfirmed(false);
         if (found) {
           setHost(found.host);
           setPort(String(found.port));
           setStartTls(found.startTls ?? false);
-          setUsername(found.username ?? '');
           if (found.outgoing) {
             setSmtpHost(found.outgoing.host);
             setSmtpPort(String(found.outgoing.port));
             setSmtpStartTls(found.outgoing.startTls ?? false);
-            setSmtpUsername(found.outgoing.username ?? '');
           }
         }
-        setStep(found?.outgoing ? 'password' : 'server');
+        setStep(found?.oauthProvider ? 'oauth' : found?.outgoing ? 'password' : 'server');
       }
     } catch (error) {
       if (step === 'password' && discovery && connectionFailures.has(error)) {
@@ -106,32 +127,35 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
     }
   }
 
-  const title = step === 'email' ? labels.title : step === 'server' ? labels.connection : labels.authenticate;
+  const oauth = discovery?.oauthProvider ? labels.providers[discovery.oauthProvider] : undefined;
+  const title = step === 'oauth' ? oauth?.title
+    : step === 'email' ? labels.title : step === 'server' ? labels.connection : labels.authenticate;
   const description = step === 'email' ? labels.description : step === 'server'
     ? discovery && !discovery.outgoing ? labels.smtpFallback
       : desktop && discovery === null ? labels.discoveryFallback : labels.imapDescription
-    : discovery?.outgoing ? labels.discoveredServer : labels.passwordDescription;
-  const status = busy ? { email: labels.discovering, server: undefined, password: labels.connecting }[step] : undefined;
-  const submitLabel = status ?? (step === 'password' ? labels.connect : labels.continue);
+    : step === 'oauth' ? oauth?.description : discovery?.outgoing ? labels.discoveredServer : labels.passwordDescription;
+  const status = busy ? { email: labels.discovering, server: undefined, password: labels.connecting, oauth: oauth?.waiting }[step] : undefined;
+  const submitLabel = status ?? (step === 'oauth' ? oauth?.signIn : step === 'password' ? labels.connect : labels.continue);
 
-  return (
-    <main className="account-setup">
-      {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
-      <section className="account-setup-card glass-panel" aria-labelledby="account-setup-title">
-        <div className="account-setup-brand"><span className="brand-icon" aria-hidden="true" />Lusi</div>
+  const content = (
+      <section className="account-setup-card glass-panel" aria-labelledby={headingId} data-step={step}>
+        <div className="account-setup-brand"><span className="brand-icon" aria-hidden="true" />Lusi
+          {onClose && <IconButton className="account-setup-close" label={labels.close} icon={X} disabled={busy}
+            onClick={() => { if (!pending.current) onClose(); }} />}
+        </div>
         <header className="account-setup-heading">
-          <h1 id="account-setup-title" ref={heading} tabIndex={-1}>{title}</h1>
+          <h1 id={headingId} ref={heading} tabIndex={-1}>{title}</h1>
           <p>{description}</p>
         </header>
         <form className="account-setup-form" onSubmit={submit} aria-busy={busy}>
           {step !== 'email' && <div className="account-setup-review">
             <span>{email}</span>
-            {step === 'password' && <>
-              <span>IMAP · {host.trim()}:{port}</span>
+            {(step === 'password' || step === 'oauth') && <>
+              <span>IMAP · {host.trim()}:{port}{step === 'oauth' && ' (SSL/TLS)'}</span>
               <span>SMTP · {smtpHost.trim()}:{smtpPort} ({smtpStartTls ? 'STARTTLS' : 'SSL/TLS'})</span>
             </>}
             <button className="text-button" type="button" disabled={busy} onClick={editPreviousStep}>
-              <ArrowLeft size={15} aria-hidden="true" />{step === 'server' ? labels.edit : labels.editServer}
+              <ArrowLeft size={15} aria-hidden="true" />{step === 'password' ? labels.editServer : labels.edit}
             </button>
           </div>}
           {step === 'email' && <label>
@@ -142,11 +166,10 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
                 setHost('');
                 setPort('993');
                 setStartTls(false);
-                setUsername('');
                 setSmtpHost('');
                 setSmtpPort('587');
                 setSmtpStartTls(true);
-                setSmtpUsername('');
+                discoveredSettings.current = null;
                 setFailure(undefined);
               }} />
           </label>}
@@ -158,20 +181,15 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
             <label>{labels.port}
               <input type="number" min={1} max={65535} required value={port} onChange={(event) => setPort(event.target.value)} />
             </label>
-            <label>{labels.imapUsername}
-              <input autoCapitalize="none" spellCheck={false} maxLength={254}
-                value={username} onChange={(event) => setUsername(event.target.value)} />
-            </label>
-            <label>{labels.security}
-              <select value={startTls ? 'starttls' : 'tls'} onChange={(event) => {
-                const useStartTls = event.target.value === 'starttls';
+            <div className="account-setup-field">
+              <label htmlFor={`${headingId}-imap-security`}>{labels.security}</label>
+              <SelectBox id={`${headingId}-imap-security`} label={labels.security} disabled={busy}
+                options={[tls, starttls]} value={startTls ? 'starttls' : 'tls'} onChange={(value) => {
+                const useStartTls = value === 'starttls';
                 if ((!startTls && port === '993') || (startTls && port === '143')) setPort(useStartTls ? '143' : '993');
                 setStartTls(useStartTls);
-              }}>
-                <option value="tls">SSL/TLS</option>
-                <option value="starttls">STARTTLS</option>
-              </select>
-            </label>
+              }} />
+            </div>
           </fieldset>}
           {step === 'server' && <fieldset className="account-setup-fields" aria-label="SMTP" disabled={busy}>
             <label>{labels.smtpHost}
@@ -185,22 +203,17 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
                 if (nextPort === '465' || nextPort === '587') setSmtpStartTls(nextPort === '587');
               }} />
             </label>
-            <label>{labels.smtpUsername}
-              <input autoCapitalize="none" spellCheck={false} maxLength={254}
-                value={smtpUsername} onChange={(event) => setSmtpUsername(event.target.value)} />
-            </label>
-            <label>{labels.smtpSecurity}
-              <select value={smtpStartTls ? 'starttls' : 'tls'} onChange={(event) => {
-                const useStartTls = event.target.value === 'starttls';
+            <div className="account-setup-field">
+              <label htmlFor={`${headingId}-smtp-security`}>{labels.smtpSecurity}</label>
+              <SelectBox id={`${headingId}-smtp-security`} label={labels.smtpSecurity} disabled={busy}
+                options={[starttls, tls]} value={smtpStartTls ? 'starttls' : 'tls'} onChange={(value) => {
+                const useStartTls = value === 'starttls';
                 if ((smtpStartTls && smtpPort === '587') || (!smtpStartTls && smtpPort === '465')) {
                   setSmtpPort(useStartTls ? '587' : '465');
                 }
                 setSmtpStartTls(useStartTls);
-              }}>
-                <option value="starttls">STARTTLS</option>
-                <option value="tls">SSL/TLS</option>
-              </select>
-            </label>
+              }} />
+            </div>
           </fieldset>}
           {step === 'password' && <>
             {discovery?.needsConfirmation && <label className="account-setup-confirmation">
@@ -215,12 +228,20 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected }: {
           </>}
           {!desktop && step !== 'email' && <p className="account-setup-hint">{labels.desktopOnly}</p>}
           {failure !== undefined && <p className="account-setup-error" role="alert">{imapErrorMessage(failure, imapErrors)}</p>}
-          <button className="compose-button" disabled={busy || (step === 'password' && passwordBlocked)} type="submit">
+          <button className="compose-button" disabled={busy || (step === 'oauth' && !desktop) || (step === 'password' && passwordBlocked)} type="submit">
             {submitLabel} <ArrowRight size={17} aria-hidden="true" />
           </button>
         </form>
         {status && <span className="sr-only" role="status">{status}</span>}
       </section>
-    </main>
   );
+  return onClose ? (
+    <dialog className="composer account-setup-dialog" data-step={step} ref={dialog} aria-label={labels.addAccount}
+      onCancel={(event) => { event.preventDefault(); if (!pending.current) onClose(); }}>
+      {content}
+    </dialog>
+  ) : <main className="account-setup">
+    {hasMacTitleBar && <div className="window-drag-area" data-tauri-drag-region="" aria-hidden="true" />}
+    {content}
+  </main>;
 }

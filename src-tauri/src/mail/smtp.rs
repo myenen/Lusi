@@ -1,9 +1,10 @@
 use super::{
-    html::sanitize_outgoing_html, reply::ReplyThread, setup_diagnostics, Account, MailError,
+    html::sanitize_outgoing_html, reply::ReplyThread, setup_diagnostics, Account, MailAuth,
+    MailError,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use lettre::transport::smtp::{
-    authentication::{Credentials, DEFAULT_MECHANISMS},
+    authentication::{Credentials, Mechanism, DEFAULT_MECHANISMS},
     client::{AsyncSmtpConnection, TlsParameters, TlsVersion},
     extension::ClientId,
     Error,
@@ -152,16 +153,14 @@ impl OutgoingMessage {
 pub(super) async fn send(
     settings: &SmtpSettings,
     email: &str,
-    password: &str,
+    auth: &MailAuth,
     message: OutgoingMessage,
 ) -> Result<(), MailError> {
     let message = message.build(email)?;
-    let mut session = tokio::time::timeout(
-        Duration::from_secs(15),
-        authenticate(settings, email, password),
-    )
-    .await
-    .map_err(|_| MailError::SmtpUnavailable)??;
+    let mut session =
+        tokio::time::timeout(Duration::from_secs(15), authenticate(settings, email, auth))
+            .await
+            .map_err(|_| MailError::SmtpUnavailable)??;
     match tokio::time::timeout(
         Duration::from_secs(35),
         session.send(message.envelope(), &message.formatted()),
@@ -224,7 +223,7 @@ impl SmtpSettings {
 pub(super) async fn verify(
     settings: &SmtpSettings,
     email: &str,
-    password: &str,
+    auth: &MailAuth,
 ) -> Result<(), MailError> {
     setup_diagnostics::record(format_args!(
         "smtp start port={} security={}",
@@ -235,11 +234,8 @@ pub(super) async fn verify(
             "tls"
         }
     ));
-    let verification = tokio::time::timeout(
-        Duration::from_secs(15),
-        authenticate(settings, email, password),
-    )
-    .await;
+    let verification =
+        tokio::time::timeout(Duration::from_secs(15), authenticate(settings, email, auth)).await;
     let mut session = match verification {
         Ok(result) => result?,
         Err(_) => {
@@ -263,7 +259,7 @@ pub(super) async fn verify(
 async fn authenticate(
     settings: &SmtpSettings,
     email: &str,
-    password: &str,
+    auth: &MailAuth,
 ) -> Result<AsyncSmtpConnection, MailError> {
     let parameters = TlsParameters::builder(settings.host.clone())
         .set_min_tls_version(TlsVersion::Tlsv12)
@@ -300,12 +296,16 @@ async fn authenticate(
         return Err(MailError::SmtpTls);
     }
     setup_diagnostics::record(format_args!("smtp tls ok"));
-    let Some(mechanism) = session.server_info().get_auth_mechanism(DEFAULT_MECHANISMS) else {
+    let mechanisms = match auth {
+        MailAuth::Password(_) => DEFAULT_MECHANISMS,
+        MailAuth::OAuth(_) => &[Mechanism::Xoauth2],
+    };
+    let Some(mechanism) = session.server_info().get_auth_mechanism(mechanisms) else {
         setup_diagnostics::record(format_args!("smtp auth no_compatible_mechanism"));
         return Err(MailError::SmtpUnavailable);
     };
     setup_diagnostics::record(format_args!("smtp auth start mechanism={mechanism}"));
-    let credential = Credentials::new(settings.login(email).to_owned(), password.to_owned());
+    let credential = Credentials::new(settings.login(email).to_owned(), auth.secret().to_owned());
     let reply = session
         .auth(&[mechanism], &credential)
         .await
@@ -459,9 +459,13 @@ mod tests {
                 stream.read_line(&mut command).await.unwrap();
                 assert!(command.is_empty() || command == "QUIT\r\n");
             });
-            assert!(verify(&settings, "test@example.test", "fixture-only")
-                .await
-                .is_err());
+            assert!(verify(
+                &settings,
+                "test@example.test",
+                &MailAuth::Password(zeroize::Zeroizing::new("fixture-only".into()))
+            )
+            .await
+            .is_err());
             tokio::time::timeout(Duration::from_secs(2), server)
                 .await
                 .unwrap()

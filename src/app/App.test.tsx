@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { App } from './App';
 
 const dialogPrototype = HTMLDialogElement.prototype;
@@ -77,7 +77,7 @@ describe('account setup', () => {
 
   it('connects through desktop commands, reads text on demand and reopens the saved inbox', async () => {
     const key = { uidValidity: 20, uid: 17 };
-    const inbox = { email: 'mail@example.test', headers: [
+    const inbox = { accountId: 1, email: 'mail@example.test', headers: [
       { key, sender: 'Sample sender', address: 'sender@example.test', subject: 'Real inbox example', sentAt: null, unread: true },
     ] };
     let connected = false;
@@ -86,6 +86,7 @@ describe('account setup', () => {
         case 'load_ui_preferences':
           return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
         case 'load_connected_inbox': return connected ? inbox : null;
+        case 'list_connected_accounts': return [{ id: inbox.accountId, email: inbox.email }];
         case 'list_connected_folders': return [];
         case 'discover_imap_settings': return null;
         case 'check_imap_settings': return undefined;
@@ -117,8 +118,8 @@ describe('account setup', () => {
     const reader = within(screen.getByRole('main', { name: 'Message reader' }));
     expect(sidebar.getByText(inbox.email)).toBeTruthy();
     expect(sidebar.getByRole<HTMLButtonElement>('button', { name: 'Compose' }).disabled).toBe(true);
-    expect(list.queryByRole('button', { name: 'Select messages' })).toBeNull();
-    expect(invoke).not.toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX', key }, undefined);
+    expect(list.getByRole('button', { name: 'Select messages' })).toBeTruthy();
+    expect(invoke).not.toHaveBeenCalledWith('read_connected_message', { accountId: 1, folder: 'INBOX', key }, undefined);
     fireEvent.change(list.getByRole('searchbox'), { target: { value: 'unrelated' } });
     expect(list.queryByRole('button', { name: /Real inbox example/ })).toBeNull();
     fireEvent.change(list.getByRole('searchbox'), { target: { value: 'sample sender' } });
@@ -127,7 +128,7 @@ describe('account setup', () => {
     expect(await screen.findByText(/Hello\./)).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     expect(reader.getByRole<HTMLButtonElement>('button', { name: 'Archive message' }).disabled).toBe(true);
-    expect(invoke).toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX', key }, undefined);
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { accountId: 1, folder: 'INBOX', key }, undefined);
     fireEvent.keyDown(window, { key: 'n', metaKey: true });
     expect(screen.queryByRole('dialog')).toBeNull();
     const settings = within(openSettings());
@@ -140,6 +141,53 @@ describe('account setup', () => {
     first.unmount();
     render(<App />);
     expect(await screen.findByRole('heading', { name: 'Inbox' })).toBeTruthy();
+  });
+
+  it('uses Google sign-in for the Gmail preset and can reconnect the same account', async () => {
+    const email = 'sample@googlemail.com';
+    let signIns = 0;
+    const invoke = vi.fn(async (command: string) => {
+      switch (command) {
+        case 'load_ui_preferences':
+          return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
+        case 'load_connected_inbox': return null;
+        case 'discover_imap_settings': return {
+          host: 'imap.gmail.com', port: 993, needsConfirmation: false,
+          outgoing: { host: 'smtp.gmail.com', port: 465, startTls: false }, oauthProvider: 'gmail',
+        };
+        case 'connect_gmail_account':
+          if (++signIns === 1) throw 'googleAccountMismatch';
+          return { accountId: 1, email, headers: [], canSend: true, oauthProvider: 'gmail' };
+        case 'list_connected_accounts': return [{ id: 1, email }];
+        case 'list_connected_folders': return [{ id: 'INBOX', name: 'Inbox', kind: 'inbox' }];
+        default: throw new Error('Unexpected Tauri command');
+      }
+    });
+    vi.stubGlobal('isTauri', true);
+    vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Email address'), { target: { value: email } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByRole('heading', { name: 'Gmail settings found' })).toBeTruthy();
+    expect(screen.getByText('IMAP · imap.gmail.com:993 (SSL/TLS)')).toBeTruthy();
+    expect(screen.getByText('SMTP · smtp.gmail.com:465 (SSL/TLS)')).toBeTruthy();
+    expect(screen.queryByLabelText('Password or app password')).toBeNull();
+    expect(screen.queryByLabelText('IMAP server')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connect account' })).toBeNull();
+    expect(invoke).toHaveBeenCalledWith('discover_imap_settings', { email }, undefined);
+    expect(invoke).not.toHaveBeenCalledWith('connect_imap_account', expect.anything(), undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit account details' }));
+    expect(screen.getByLabelText<HTMLInputElement>('Email address').value).toBe(email);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Choose the Google account that matches the Gmail address you entered.');
+    expect(invoke).toHaveBeenCalledWith('connect_gmail_account', { email }, undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
+    await screen.findByRole('heading', { name: 'Inbox' });
+    const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'Reconnect with Google' }));
+    expect(await settings.findByText('Gmail is connected again.')).toBeTruthy();
+    expect(signIns).toBe(3);
   });
 
   it.each([false, true])('uses discovered TLS settings and falls back after a connection error (confirmation %s)', async (needsConfirmation) => {
@@ -177,13 +225,13 @@ describe('account setup', () => {
       account: { email: 'mail@example.test', host, port: 1993, username: 'mail', startTls: true }, outgoing, password: 'fixture-only',
     }, undefined);
     expect(screen.getByLabelText<HTMLInputElement>('IMAP server').value).toBe(host);
-    expect(screen.getByLabelText<HTMLInputElement>('TLS port').value).toBe('1993');
-    expect(screen.getByLabelText<HTMLSelectElement>('Connection security').value).toBe('starttls');
+    expect(screen.getByLabelText<HTMLInputElement>('IMAP port').value).toBe('1993');
+    expect(screen.getByRole('combobox', { name: 'Connection security' }).textContent).toBe('STARTTLS');
     expect(screen.getByLabelText<HTMLInputElement>('SMTP server').value).toBe(outgoing.host);
     expect(screen.queryByLabelText('Password or app password')).toBeNull();
   });
 
-  it('keeps a discovered IMAP login while requesting missing SMTP settings', async () => {
+  it.each([false, true])('only keeps a discovered login for its original host (edited host %s)', async (editedHost) => {
     const invoke = vi.fn(async (command: string) => {
       switch (command) {
         case 'load_ui_preferences':
@@ -201,15 +249,22 @@ describe('account setup', () => {
     fireEvent.change(await screen.findByLabelText('Email address'), { target: { value: 'mail@example.test' } });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     const outgoing = await screen.findByLabelText('SMTP server');
-    expect(screen.getByLabelText<HTMLInputElement>('IMAP username (optional)').value).toBe('mail');
+    for (const protocol of ['IMAP', 'SMTP']) {
+      const fields = within(screen.getByRole('group', { name: protocol }));
+      expect(fields.getAllByRole('textbox')).toHaveLength(1);
+      expect(fields.getByRole('spinbutton')).toBeTruthy();
+      expect(fields.getByRole('combobox')).toBeTruthy();
+    }
     expect(screen.queryByLabelText('Password or app password')).toBeNull();
+    const host = editedHost ? 'imap.manual.test' : 'imap.provider.test';
+    if (editedHost) fireEvent.change(screen.getByLabelText('IMAP server'), { target: { value: host } });
     fireEvent.change(outgoing, { target: { value: 'smtp.example.test' } });
     fireEvent.change(screen.getByLabelText('SMTP port'), { target: { value: '465' } });
-    expect(screen.getByLabelText<HTMLSelectElement>('SMTP security').value).toBe('tls');
+    expect(screen.getByRole('combobox', { name: 'SMTP security' }).textContent).toBe('SSL/TLS');
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect((await screen.findByLabelText<HTMLInputElement>('Password or app password')).disabled).toBe(true);
+    expect((await screen.findByLabelText<HTMLInputElement>('Password or app password')).disabled).toBe(!editedHost);
     expect(invoke).toHaveBeenCalledWith('check_imap_settings', {
-      account: { email: 'mail@example.test', host: 'imap.provider.test', port: 993, username: 'mail' },
+      account: { email: 'mail@example.test', host, port: 993, ...(!editedHost && { username: 'mail' }) },
       outgoing: { host: 'smtp.example.test', port: 465, startTls: false },
     }, undefined);
   });
@@ -219,13 +274,14 @@ const fixtureKey = { uidValidity: 20, uid: 17 };
 const fixtureHeader = { key: fixtureKey, sender: 'Sample sender', address: 'sender@example.test', subject: 'Inbox message', sentAt: null, unread: true, starred: false };
 
 function mockMailbox() {
-  const invoke = vi.fn(async (command: string, args: { folder?: string }): Promise<unknown> => {
+  const invoke = vi.fn(async (command: string, args: { folder?: string; accountId?: number }): Promise<unknown> => {
     switch (command) {
       case 'load_ui_preferences':
         return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
       case 'load_connected_inbox':
       case 'refresh_connected_inbox':
-        return { email: 'mail@example.test', headers: [fixtureHeader], canSend: true };
+        return { accountId: 1, email: 'mail@example.test', headers: [fixtureHeader], canSend: true };
+      case 'list_connected_accounts': return [{ id: 1, email: 'mail@example.test' }];
       case 'list_connected_folders':
         return [
           { id: 'INBOX', name: 'Inbox', kind: 'inbox' },
@@ -251,6 +307,275 @@ function mockMailbox() {
 }
 
 describe('connected mailbox', () => {
+  it('previews the selected message and requests printing only from the preview', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'read_connected_message') {
+        return {
+          body: null, seen: true, seenError: null,
+          html: { content: '<p><strong>Printable body</strong> <a href="https://example.test">Link text</a></p><table><tbody><tr><td>Table value</td></tr></tbody></table><img src="https://example.test/track.gif"><script>hidden script</script>' },
+          attachments: [{ part: [2], name: 'Report.pdf', isImage: false, canOpen: true }],
+        };
+      }
+      if (command === 'plugin:webview|print') return undefined;
+      return fallback(command, args);
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Inbox message/ }));
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    await reader.findByTitle('HTML message content');
+    const trigger = reader.getByRole('button', { name: 'Print preview' });
+    fireEvent.click(trigger);
+
+    const modal = within(screen.getByRole('dialog', { name: 'Print preview' }));
+    expect(modal.getByRole('heading', { name: 'Inbox message' })).toBeTruthy();
+    expect(modal.getByText('Printable body').tagName).toBe('STRONG');
+    expect(modal.getByRole('cell', { name: 'Table value' })).toBeTruthy();
+    expect(modal.getByText('Report.pdf')).toBeTruthy();
+    expect(modal.queryByRole('link')).toBeNull();
+    expect(modal.queryByText('hidden script')).toBeNull();
+    expect(document.querySelector('.mail-print-output img')).toBeNull();
+    expect(invoke.mock.calls.some(([command]) => command === 'plugin:webview|print')).toBe(false);
+
+    await act(async () => fireEvent.click(modal.getByRole('button', { name: 'Print' })));
+    expect(invoke).toHaveBeenCalledWith('plugin:webview|print', {}, undefined);
+    fireEvent.click(modal.getByRole('button', { name: 'Close print preview' }));
+    expect(screen.queryByRole('dialog', { name: 'Print preview' })).toBeNull();
+    expect(document.querySelector('.mail-print-output')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('marks attachment rows, shows file names and requests only the chosen part', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const filename = 'Yearly consolidated price list for academic publications.xls';
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox') {
+        const plain = { ...fixtureHeader, key: { ...fixtureKey, uid: 18 }, subject: 'Plain message' };
+        return { accountId: 1, email: 'mail@example.test', headers: [{ ...fixtureHeader, hasAttachments: true }, plain], canSend: true };
+      }
+      if (command === 'read_connected_message') {
+        return { body: 'Example body', seen: true, seenError: null,
+          attachments: [
+            { part: [2, 1], name: filename, isImage: false, canOpen: true },
+            { part: [3], name: 'Tools.exe', isImage: false, canOpen: false },
+          ] };
+      }
+      if (command === 'open_connected_attachment') return undefined;
+      if (command === 'download_connected_attachment') return 'openFailed';
+      return fallback(command, args);
+    });
+    render(<App />);
+    const row = await screen.findByRole('button', { name: /Inbox message/ });
+    expect(within(row).getByRole('img', { name: 'Has attachments' })).toBeTruthy();
+    expect(within(screen.getByRole('button', { name: /Plain message/ })).queryByRole('img', { name: 'Has attachments' })).toBeNull();
+    expect(invoke.mock.calls.some(([command]) => command === 'download_connected_attachment')).toBe(false);
+    fireEvent.click(row);
+    const attachments = within(await screen.findByRole('region', { name: 'Attachments' }));
+    const open = attachments.getByRole<HTMLButtonElement>('button', { name: `Open ${filename}` });
+    const download = attachments.getByRole('button', { name: `Download and open ${filename}` });
+    expect(open.classList.contains('icon-button') && download.classList.contains('icon-button')).toBe(true);
+    expect(attachments.queryByRole('button', { name: 'Open Tools.exe' })).toBeNull();
+    await act(async () => fireEvent.click(attachments.getByTitle(filename)));
+    expect(invoke).toHaveBeenCalledWith('open_connected_attachment', {
+      accountId: 1, folder: 'INBOX', key: fixtureKey, part: [2, 1],
+    }, undefined);
+    expect(invoke.mock.calls.some(([command]) => command === 'download_connected_attachment')).toBe(false);
+    fireEvent.click(download);
+    expect((await attachments.findByRole('alert')).textContent).toBe('Attachment saved to Downloads. The default app could not open it.');
+    expect(invoke).toHaveBeenCalledWith('download_connected_attachment', {
+      accountId: 1, folder: 'INBOX', key: fixtureKey, part: [2, 1],
+    }, undefined);
+  });
+
+  it('offers quick account switching only when multiple accounts are saved', async () => {
+    mockMailbox();
+    render(<App />);
+    await screen.findByText('mail@example.test');
+    await act(async () => {});
+    expect(screen.queryByRole('combobox', { name: /Switch account/ })).toBeNull();
+  });
+
+  it('switches from the sidebar and keeps the current mailbox when the switch fails', async () => {
+    if (!HTMLElement.prototype.scrollIntoView) {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
+      onTestFinished(() => { Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView'); });
+    }
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const second = { id: 2, email: 'second@example.test' };
+    let failSwitch = true;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'list_connected_accounts') return [{ id: 1, email: 'mail@example.test' }, second];
+      if (command === 'switch_connected_account') {
+        if (failSwitch) throw 'storage';
+        return { accountId: second.id, email: second.email, headers: [{ ...fixtureHeader, subject: 'Second mailbox' }], canSend: true };
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    const switcher = await screen.findByRole('combobox', { name: /Switch account.*mail@example.test/ });
+    const chooseSecond = async () => {
+      fireEvent.keyDown(switcher, { key: 'Enter' });
+      fireEvent.keyDown(await screen.findByRole('option', { name: second.email }), { key: 'Enter' });
+    };
+    await chooseSecond();
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText('Inbox message')).toBeTruthy();
+    failSwitch = false;
+    await chooseSecond();
+    expect(await screen.findByText('Second mailbox')).toBeTruthy();
+    expect(await screen.findByRole('combobox', { name: /Switch account.*second@example.test/ })).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('switch_connected_account', { accountId: second.id }, undefined);
+  });
+
+  it('selects visible messages and keeps unconfirmed messages selected after a bulk action', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const second = { ...fixtureHeader, key: { ...fixtureKey, uid: 18 }, subject: 'Project notes' };
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox') {
+        return { accountId: 1, email: 'mail@example.test', headers: [fixtureHeader, second], canSend: true };
+      }
+      if (command === 'update_connected_messages') {
+        return { updated: [fixtureKey], error: 'actionFailed' };
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    const toggle = await screen.findByRole('button', { name: 'Select messages' });
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Inbox message' }));
+    expect(screen.getByText('1 selected')).toBeTruthy();
+
+    const search = screen.getByRole('searchbox');
+    fireEvent.change(search, { target: { value: 'Project' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select all visible' }));
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Select Project notes' }).checked).toBe(true);
+    fireEvent.change(search, { target: { value: '' } });
+    expect(screen.getByText('0 selected')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Select all visible' }));
+    const actions = within(screen.getByRole('group', { name: 'Bulk actions' }));
+    fireEvent.click(actions.getByRole('button', { name: 'Archive message' }));
+
+    expect(await screen.findByText('1 message updated.')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('The server did not confirm the change.');
+    expect(screen.queryByRole('checkbox', { name: 'Select Inbox message' })).toBeNull();
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Select Project notes' }).checked).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('update_connected_messages', {
+      accountId: 1, folder: 'INBOX', keys: [fixtureKey, second.key], action: 'archive',
+    }, undefined);
+    expect(invoke.mock.calls.some(([command]) => command === 'read_connected_message')).toBe(false);
+
+    fireEvent.keyDown(toggle, { key: 'Escape' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('group', { name: 'Manage message' })).toBeTruthy();
+  });
+
+  it('runs list actions on the row without opening it or replacing the current reading selection', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const second = { ...fixtureHeader, key: { ...fixtureKey, uid: 18 }, subject: 'Other inbox message' };
+    invoke.mockImplementation((command, args) => command === 'load_connected_inbox'
+      ? Promise.resolve({ accountId: 1, email: 'mail@example.test', headers: [fixtureHeader, second], canSend: true })
+      : fallback(command, args));
+    render(<App />);
+    fireEvent.click(await screen.findByText('Inbox message', { exact: true }));
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    expect(await reader.findByText('Inbox body')).toBeTruthy();
+    const row = screen.getByText('Other inbox message', { exact: true }).closest('li')!;
+    const rowActions = within(row);
+    fireEvent.click(rowActions.getByRole('button', { name: 'Mark as read' }));
+    expect(await rowActions.findByRole('button', { name: 'Mark as unread' })).toBeTruthy();
+    fireEvent.click(rowActions.getByRole('button', { name: 'Archive message' }));
+    expect(await screen.findByText('Message archived.')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: second.key, action: 'read' }, undefined);
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: second.key, action: 'archive' }, undefined);
+    expect(invoke).not.toHaveBeenCalledWith('read_connected_message', { accountId: 1, folder: 'INBOX', key: second.key }, undefined);
+    expect(reader.getByRole('heading', { name: 'Inbox message' })).toBeTruthy();
+  });
+
+  it.each([false, true])('shows the refresh spinner until the request settles (network error %s)', async (fails) => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    let finish: (() => void) | undefined;
+    invoke.mockImplementation((command, args) => command === 'refresh_connected_inbox'
+      ? new Promise((resolve, reject) => {
+        finish = () => { if (fails) reject('network'); else resolve(fallback(command, args)); };
+      })
+      : fallback(command, args));
+    render(<App />);
+    const refresh = await screen.findByRole<HTMLButtonElement>('button', { name: 'Refresh messages' });
+    expect(refresh.getAttribute('aria-busy')).toBe('false');
+    fireEvent.click(refresh);
+    expect(refresh.getAttribute('aria-busy')).toBe('true');
+    expect(refresh.disabled).toBe(true);
+    await act(async () => finish?.());
+    expect(refresh.getAttribute('aria-busy')).toBe('false');
+    expect(refresh.disabled).toBe(false);
+    expect(Boolean(screen.queryByRole('alert'))).toBe(fails);
+  });
+
+  it('adds an account through a modal and switches mailboxes without mixing drafts or late inbox results', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const first = { accountId: 1, email: 'mail@example.test', headers: [fixtureHeader], canSend: true };
+    const second = {
+      accountId: 2, email: 'second@gmail.com', canSend: true, oauthProvider: 'gmail',
+      headers: [{ ...fixtureHeader, subject: 'Second inbox message' }],
+    };
+    let added = false;
+    let finishRefresh: ((inbox: typeof second) => void) | undefined;
+    invoke.mockImplementation(async (command, args) => {
+      switch (command) {
+        case 'list_connected_accounts': return [first, ...(added ? [second] : [])]
+          .map(({ accountId, email }) => ({ id: accountId, email }));
+        case 'discover_imap_settings': return {
+          host: 'imap.gmail.com', port: 993, needsConfirmation: false,
+          outgoing: { host: 'smtp.gmail.com', port: 465 }, oauthProvider: 'gmail',
+        };
+        case 'connect_gmail_account': added = true; return second;
+        case 'switch_connected_account': return args.accountId === 1 ? first : second;
+        case 'refresh_connected_inbox':
+          if (args.accountId === 2) return new Promise((resolve) => { finishRefresh = resolve; });
+          return first;
+        default: return fallback(command, args);
+      }
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Compose' }));
+    const draft = within(screen.getByRole('dialog', { name: 'New message' }));
+    fireEvent.change(draft.getByLabelText('Subject'), { target: { value: 'First account draft' } });
+    fireEvent.click(draft.getByRole('button', { name: 'Close composer' }));
+
+    fireEvent.click(within(openSettings()).getByRole('button', { name: 'Add account' }));
+    const modal = within(screen.getByRole('dialog', { name: 'Add account' }));
+    fireEvent.change(modal.getByLabelText('Email address'), { target: { value: second.email } });
+    fireEvent.click(modal.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(await modal.findByRole('button', { name: 'Sign in with Google' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Second inbox message/ }));
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { accountId: 2, folder: 'INBOX', key: fixtureKey }, undefined);
+    expect(screen.queryByRole('dialog', { name: 'Add account' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
+    const newDraft = within(screen.getByRole('dialog', { name: 'New message' }));
+    expect(newDraft.getByLabelText<HTMLInputElement>('Subject').value).toBe('');
+    fireEvent.click(newDraft.getByRole('button', { name: 'Close composer' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh messages' }));
+    const settings = within(openSettings());
+    expect((await settings.findByRole('button', { name: /second@gmail.com/ })).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(settings.getByRole('button', { name: first.email }));
+    await screen.findByRole('button', { name: /Inbox message/ });
+    expect(invoke).toHaveBeenCalledWith('switch_connected_account', { accountId: 1 }, undefined);
+    await act(async () => finishRefresh?.(second));
+    expect(screen.queryByRole('button', { name: /Second inbox message/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
+    expect(screen.getByLabelText<HTMLInputElement>('Subject').value).toBe('First account draft');
+  });
+
   it('uses the response footer to create scoped replies and forwards', async () => {
     const invoke = mockMailbox();
     render(<App />);
@@ -285,6 +610,7 @@ describe('connected mailbox', () => {
     fireEvent.click(all.getByRole('button', { name: 'Send' }));
     expect(await screen.findByText('Message accepted by the outgoing server.')).toBeTruthy();
     expect(invoke).toHaveBeenCalledWith('send_connected_message', {
+      accountId: 1,
       message: expect.objectContaining({
         to: ['reply@example.test'], cc: ['team@example.test'], bcc: [],
         replyThread: { inReplyTo: 'parent@example.test', references: ['first@example.test'] },
@@ -309,6 +635,7 @@ describe('connected mailbox', () => {
     fireEvent.click(composer.getByRole('button', { name: 'Send' }));
     await screen.findByText('Message accepted by the outgoing server.');
     expect(invoke).toHaveBeenCalledWith('send_connected_message', {
+      accountId: 1,
       message: expect.objectContaining({ to: ['recipient@example.test'], html: '<p><strong>Hello</strong></p>' }),
     }, undefined);
   });
@@ -370,12 +697,12 @@ describe('connected mailbox', () => {
     expect(await screen.findByText('Inbox body')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Inbox message' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Mark as unread' }));
+    fireEvent.click(within(screen.getByRole('main', { name: 'Message reader' })).getByRole('button', { name: 'Mark as unread' }));
     expect(await screen.findByRole('button', { name: /Inbox message/ })).toBeTruthy();
-    expect(invoke).toHaveBeenCalledWith('update_connected_message', { folder: 'INBOX', key: fixtureKey, action: 'unread' }, undefined);
-    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: fixtureKey, action: 'unread' }, undefined);
+    fireEvent.click(within(screen.getByRole('main', { name: 'Message reader' })).getByRole('button', { name: 'Move to Trash' }));
     expect(await screen.findByText('Message moved to Trash.')).toBeTruthy();
-    expect(invoke).toHaveBeenCalledWith('update_connected_message', { folder: 'INBOX', key: fixtureKey, action: 'trash' }, undefined);
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: fixtureKey, action: 'trash' }, undefined);
   });
   it('sends from the composer and uses IMAP actions for the selected message', async () => {
     const invoke = mockMailbox();
@@ -390,15 +717,16 @@ describe('connected mailbox', () => {
     fireEvent.click(composer.getByRole('button', { name: 'Send' }));
     expect(await screen.findByText('Message accepted by the outgoing server.')).toBeTruthy();
     expect(invoke).toHaveBeenCalledWith('send_connected_message', {
+      accountId: 1,
       message: { to: ['recipient@example.test'], cc: [], bcc: [], subject: 'Hello', body: '', html: 'Live message', attachments: [] },
     }, undefined);
     fireEvent.click(screen.getByRole('button', { name: /Inbox message/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add star' }));
     expect(await screen.findByRole('button', { name: 'Remove star' })).toBeTruthy();
-    expect(invoke).toHaveBeenCalledWith('update_connected_message', { folder: 'INBOX', key: fixtureKey, action: 'star' }, undefined);
-    fireEvent.click(screen.getByRole('button', { name: 'Archive message' }));
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: fixtureKey, action: 'star' }, undefined);
+    fireEvent.click(within(screen.getByRole('main', { name: 'Message reader' })).getByRole('button', { name: 'Archive message' }));
     expect(await screen.findByText('Message archived.')).toBeTruthy();
-    expect(invoke).toHaveBeenCalledWith('update_connected_message', { folder: 'INBOX', key: fixtureKey, action: 'archive' }, undefined);
+    expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: fixtureKey, action: 'archive' }, undefined);
     expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
   });
   it('reveals the sidebar, list and reader on startup', async () => {
@@ -437,8 +765,8 @@ describe('connected mailbox', () => {
     fireEvent.click(nav.getByRole('button', { name: 'Sent' }));
     fireEvent.click(await screen.findByRole('button', { name: /Sent message/ }));
     expect(await screen.findByText('Sent body')).toBeTruthy();
-    expect(invoke).toHaveBeenCalledWith('read_connected_folder', { folder: 'INBOX.Outgoing' }, undefined);
-    expect(invoke).toHaveBeenCalledWith('read_connected_message', { folder: 'INBOX.Outgoing', key: fixtureKey }, undefined);
+    expect(invoke).toHaveBeenCalledWith('read_connected_folder', { accountId: 1, folder: 'INBOX.Outgoing' }, undefined);
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { accountId: 1, folder: 'INBOX.Outgoing', key: fixtureKey }, undefined);
     expect(screen.queryByText('Inbox body')).toBeNull();
     fireEvent.click(nav.getByRole('button', { name: /^Inbox/ }));
     expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();

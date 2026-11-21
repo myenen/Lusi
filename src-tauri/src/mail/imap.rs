@@ -1,10 +1,11 @@
 use super::{
-    validate_folder, Account, FolderKind, MailError, MailFolder, MailHeader, MessageAction,
-    MessageKey, OpenedMessage,
+    attachments, validate_folder, Account, BatchActionResult, FolderKind, MailAuth, MailError,
+    MailFolder, MailHeader, MessageAction, MessageKey, OpenedMessage,
 };
 use async_imap::{
+    imap_proto::SectionPath,
     types::{Capabilities, Capability, Flag, NameAttribute},
-    Client, Session,
+    Authenticator, Client, Session,
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use futures_util::TryStreamExt;
@@ -19,22 +20,22 @@ use tokio::{
 use tokio_native_tls::{TlsConnector, TlsStream};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
-const HEADER_QUERY: &str = "(UID FLAGS BODY.PEEK[HEADER]<0.16384>)";
-const BODY_QUERY: &str = "(UID FLAGS RFC822.SIZE BODY.PEEK[]<0.1048577>)";
+const HEADER_QUERY: &str = "(UID FLAGS BODYSTRUCTURE BODY.PEEK[HEADER]<0.16384>)";
+const BODY_QUERY: &str = "(UID FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[]<0.1048577>)";
 const BODY_LIMIT: usize = 1_048_576;
-const WINDOW_SIZE: u32 = 50;
+pub(super) const WINDOW_SIZE: u32 = 50;
 
-pub async fn inbox(account: &Account, password: &str) -> Result<Vec<MailHeader>, MailError> {
-    folder(account, password, "INBOX").await
+pub async fn inbox(account: &Account, auth: &MailAuth) -> Result<Vec<MailHeader>, MailError> {
+    folder(account, auth, "INBOX").await
 }
 
 pub async fn folder(
     account: &Account,
-    password: &str,
+    auth: &MailAuth,
     folder: &str,
 ) -> Result<Vec<MailHeader>, MailError> {
     timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, password).await?;
+        let mut session = authenticate(account, auth).await?;
         fetch_folder(&mut session, folder).await
     })
     .await
@@ -43,15 +44,105 @@ pub async fn folder(
 
 pub async fn message(
     account: &Account,
-    password: &str,
+    auth: &MailAuth,
     folder: &str,
     key: MessageKey,
 ) -> Result<OpenedMessage, MailError> {
     let deadline = Instant::now() + REQUEST_TIMEOUT;
-    let mut session = timeout_at(deadline, authenticate(account, password))
+    let mut session = timeout_at(deadline, authenticate(account, auth))
         .await
         .map_err(|_| MailError::Timeout)??;
     open_in_session(&mut session, folder, key, &account.email, deadline).await
+}
+
+pub(super) async fn download_attachment(
+    account: &Account,
+    auth: &MailAuth,
+    folder: &str,
+    key: MessageKey,
+    part: Vec<u32>,
+) -> Result<(attachments::Attachment, Vec<u8>), MailError> {
+    timeout(REQUEST_TIMEOUT * 3, async {
+        let mut session = authenticate(account, auth).await?;
+        fetch_attachment(&mut session, folder, key, part).await
+    })
+    .await
+    .map_err(|_| MailError::Timeout)?
+}
+
+async fn fetch_attachment<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    key: MessageKey,
+    part: Vec<u32>,
+) -> Result<(attachments::Attachment, Vec<u8>), MailError> {
+    let mailbox = session
+        .examine(folder)
+        .await
+        .map_err(|_| MailError::Folder)?;
+    if mailbox.uid_validity != Some(key.uid_validity) {
+        return Err(MailError::MailboxChanged);
+    }
+    let uid = key.uid.to_string();
+    let selected = {
+        let mut fetches = session
+            .uid_fetch(&uid, "(UID BODYSTRUCTURE)")
+            .await
+            .map_err(|_| MailError::AttachmentUnavailable)?;
+        let mut selected = None;
+        while let Some(fetch) = fetches
+            .try_next()
+            .await
+            .map_err(|_| MailError::AttachmentUnavailable)?
+        {
+            if fetch.uid == Some(key.uid) {
+                if let Some(structure) = fetch.bodystructure() {
+                    selected =
+                        attachments::list(structure).find(|entry| entry.attachment.part == part);
+                }
+            }
+        }
+        selected.ok_or(MailError::AttachmentUnavailable)?
+    };
+    let encoding = selected.encoding.ok_or(MailError::AttachmentUnavailable)?;
+    let wire_limit = attachments::wire_limit(encoding);
+    let expected_size = selected.octets as usize;
+    if expected_size > wire_limit {
+        return Err(MailError::AttachmentTooLarge);
+    }
+    let section = part
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    let query = format!("(UID BODY.PEEK[{section}]<0.{}>)", expected_size + 1);
+    let section = SectionPath::Part(part, None);
+    let mut fetches = session
+        .uid_fetch(uid, query)
+        .await
+        .map_err(|_| MailError::AttachmentUnavailable)?;
+    let mut data = None;
+    while let Some(fetch) = fetches
+        .try_next()
+        .await
+        .map_err(|_| MailError::AttachmentUnavailable)?
+    {
+        if fetch.uid == Some(key.uid) {
+            if let Some(bytes) = fetch.section(&section) {
+                if bytes.len() > wire_limit {
+                    return Err(MailError::AttachmentTooLarge);
+                }
+                if bytes.len() != expected_size {
+                    return Err(MailError::AttachmentUnavailable);
+                }
+                data = Some(attachments::decode(bytes, encoding)?);
+            }
+        }
+    }
+    Ok((
+        selected.attachment,
+        data.ok_or(MailError::AttachmentUnavailable)?,
+    ))
 }
 
 async fn open_in_session<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -81,13 +172,13 @@ async fn open_in_session<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::De
 
 pub(super) async fn apply_action(
     account: &Account,
-    password: &str,
+    auth: &MailAuth,
     folder: &str,
     key: MessageKey,
     action: MessageAction,
 ) -> Result<(), MailError> {
     timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, password).await?;
+        let mut session = authenticate(account, auth).await?;
         apply_message_action(&mut session, folder, key, action).await
     })
     .await
@@ -100,13 +191,71 @@ async fn apply_message_action<T: AsyncRead + AsyncWrite + Unpin + Send + std::fm
     key: MessageKey,
     action: MessageAction,
 ) -> Result<(), MailError> {
+    let destination = action_destination(session, folder, action).await?;
+    change_message(session, folder, key, action, destination.as_deref()).await
+}
+
+pub(super) async fn apply_batch(
+    account: &Account,
+    auth: &MailAuth,
+    folder: &str,
+    keys: &[MessageKey],
+    action: MessageAction,
+) -> Result<BatchActionResult, MailError> {
+    let first = keys.first().ok_or(MailError::InvalidSettings)?;
+    let deadline = Instant::now() + REQUEST_TIMEOUT * 2;
+    let (mut session, destination) = timeout_at(deadline, async {
+        let mut session = authenticate(account, auth).await?;
+        let destination = action_destination(&mut session, folder, action).await?;
+        select_action_folder(&mut session, folder, first.uid_validity).await?;
+        Ok::<_, MailError>((session, destination))
+    })
+    .await
+    .map_err(|_| MailError::ActionFailed)??;
+    Ok(change_selected_batch(&mut session, keys, action, destination.as_deref(), deadline).await)
+}
+
+async fn change_selected_batch<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    keys: &[MessageKey],
+    action: MessageAction,
+    destination: Option<&str>,
+    deadline: Instant,
+) -> BatchActionResult {
+    let mut updated = Vec::with_capacity(keys.len());
+    for &key in keys {
+        let result = timeout_at(
+            deadline,
+            change_selected_message(session, key.uid, action, destination),
+        )
+        .await
+        .unwrap_or(Err(MailError::ActionFailed));
+        if let Err(error) = result {
+            return BatchActionResult {
+                updated,
+                error: Some(error),
+            };
+        }
+        updated.push(key);
+    }
+    BatchActionResult {
+        updated,
+        error: None,
+    }
+}
+
+async fn action_destination<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    action: MessageAction,
+) -> Result<Option<String>, MailError> {
     let destination = match action {
         MessageAction::Archive => Some(FolderKind::Archive),
         MessageAction::Trash => Some(FolderKind::Trash),
         MessageAction::Restore => Some(FolderKind::Inbox),
         _ => None,
     };
-    let destination = if let Some(kind) = destination {
+    if let Some(kind) = destination {
         let capabilities = session
             .capabilities()
             .await
@@ -131,11 +280,10 @@ async fn apply_message_action<T: AsyncRead + AsyncWrite + Unpin + Send + std::fm
         {
             return Err(MailError::ActionUnavailable);
         }
-        Some(target.id)
+        Ok(Some(target.id))
     } else {
-        None
-    };
-    change_message(session, folder, key, action, destination.as_deref()).await
+        Ok(None)
+    }
 }
 
 async fn change_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -145,14 +293,32 @@ async fn change_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Deb
     action: MessageAction,
     destination: Option<&str>,
 ) -> Result<(), MailError> {
+    select_action_folder(session, folder, key.uid_validity).await?;
+    change_selected_message(session, key.uid, action, destination).await
+}
+
+async fn select_action_folder<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    uid_validity: u32,
+) -> Result<(), MailError> {
     let selected = session
         .select(folder)
         .await
         .map_err(|_| MailError::ActionFailed)?;
-    if selected.uid_validity != Some(key.uid_validity) {
+    if selected.uid_validity != Some(uid_validity) {
         return Err(MailError::MailboxChanged);
     }
-    let uid = key.uid.to_string();
+    Ok(())
+}
+
+async fn change_selected_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    uid_number: u32,
+    action: MessageAction,
+    destination: Option<&str>,
+) -> Result<(), MailError> {
+    let uid = uid_number.to_string();
     {
         let mut matches = session
             .uid_fetch(&uid, "(UID)")
@@ -164,7 +330,7 @@ async fn change_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Deb
             .await
             .map_err(|_| MailError::ActionFailed)?
         {
-            found |= entry.uid == Some(key.uid);
+            found |= entry.uid == Some(uid_number);
         }
         if !found {
             return Err(MailError::MessageMissing);
@@ -190,7 +356,7 @@ async fn change_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Deb
 
 async fn authenticate(
     account: &Account,
-    password: &str,
+    auth: &MailAuth,
 ) -> Result<Session<TlsStream<TcpStream>>, MailError> {
     let socket = TcpStream::connect((account.host.as_str(), account.port))
         .await
@@ -216,13 +382,46 @@ async fn authenticate(
             .map_err(|_| MailError::Network)?
             .ok_or(MailError::Network)?;
     }
-    client
-        .login(account.login(), password)
-        .await
-        .map_err(|(error, _)| match error {
-            async_imap::error::Error::No(_) => MailError::LoginRejected,
-            _ => MailError::Network,
-        })
+    let session = match auth {
+        MailAuth::Password(password) => client.login(account.login(), password.as_str()).await,
+        MailAuth::OAuth(token) => {
+            client
+                .authenticate(
+                    "XOAUTH2",
+                    Xoauth2 {
+                        user: account.login(),
+                        token,
+                        sent: false,
+                    },
+                )
+                .await
+        }
+    };
+    session.map_err(|(error, _)| match error {
+        async_imap::error::Error::No(_) => MailError::LoginRejected,
+        _ => MailError::Network,
+    })
+}
+
+struct Xoauth2<'a> {
+    user: &'a str,
+    token: &'a str,
+    sent: bool,
+}
+
+impl Authenticator for Xoauth2<'_> {
+    type Response = zeroize::Zeroizing<Vec<u8>>;
+
+    fn process(&mut self, challenge: &[u8]) -> Self::Response {
+        // Gmail sends an error challenge after a rejected token and expects an empty reply.
+        if self.sent || !challenge.is_empty() {
+            return zeroize::Zeroizing::new(Vec::new());
+        }
+        self.sent = true;
+        zeroize::Zeroizing::new(
+            format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token).into_bytes(),
+        )
+    }
 }
 
 async fn request_start_tls<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -241,9 +440,9 @@ async fn request_start_tls<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::
     Ok(client.into_inner())
 }
 
-pub async fn folders(account: &Account, password: &str) -> Result<Vec<MailFolder>, MailError> {
+pub async fn folders(account: &Account, auth: &MailAuth) -> Result<Vec<MailFolder>, MailError> {
     timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, password).await?;
+        let mut session = authenticate(account, auth).await?;
         let capabilities = session
             .capabilities()
             .await
@@ -409,6 +608,9 @@ async fn fetch_folder<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
             sent_at,
             unread: !fetch.flags().any(|flag| flag == Flag::Seen),
             starred: fetch.flags().any(|flag| flag == Flag::Flagged),
+            has_attachments: fetch
+                .bodystructure()
+                .is_some_and(|structure| attachments::list(structure).next().is_some()),
         });
         if headers.len() > WINDOW_SIZE as usize {
             return Err(folder_error());
@@ -444,14 +646,24 @@ async fn fetch_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
         let Some(bytes) = fetch.body() else {
             continue;
         };
-        if bytes.len() > BODY_LIMIT || fetch.size.is_some_and(|size| size as usize > BODY_LIMIT) {
-            return Err(MailError::MessageTooLarge);
-        }
+        let body_truncated =
+            bytes.len() > BODY_LIMIT || fetch.size.is_some_and(|size| size as usize > BODY_LIMIT);
+        let bytes = &bytes[..bytes.len().min(BODY_LIMIT)];
         let (body, html) = super::html::read_body(bytes);
+        let attachments = fetch
+            .bodystructure()
+            .map(|structure| {
+                attachments::list(structure)
+                    .map(|entry| entry.attachment)
+                    .collect()
+            })
+            .unwrap_or_default();
         let summary = super::summary::MessageSummarizer::summarize(body.as_deref(), html.as_ref());
         result = Ok(OpenedMessage {
             body,
+            body_truncated,
             html,
+            attachments,
             summary,
             reply: super::reply::details(bytes, email),
             seen: fetch.flags().any(|flag| flag == Flag::Seen),
@@ -473,6 +685,20 @@ fn clean_header(text: Option<&str>, limit: usize) -> String {
 mod tests {
     use super::*;
     use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+
+    #[test]
+    fn xoauth2_sends_the_token_once_and_empties_the_error_challenge() {
+        let mut auth = Xoauth2 {
+            user: "fixture@gmail.com",
+            token: "fixture-token",
+            sent: false,
+        };
+        assert_eq!(
+            auth.process(b"").as_slice(),
+            b"user=fixture@gmail.com\x01auth=Bearer fixture-token\x01\x01"
+        );
+        assert!(auth.process(br#"{"status":"401"}"#).is_empty());
+    }
 
     #[test]
     fn refuses_to_continue_when_the_server_rejects_starttls() {
@@ -516,6 +742,106 @@ mod tests {
             .write_all(format!("{response}{tag} OK completed\r\n").as_bytes())
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn lists_and_downloads_attachments_by_uid_and_part_without_fetching_inline_images() {
+        tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(5), async {
+                let (client, server) = duplex(4096);
+                let fixture = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    exchange(&mut server, r#"LOGIN "mail@example.test" "fixture-only""#, "").await;
+                    let selected = "* 1 EXISTS\r\n* OK [UIDVALIDITY 20] stable UID namespace\r\n";
+                    let structure = concat!(
+                        r#"((("TEXT" "HTML" NIL NIL NIL "7BIT" 4 1)"#,
+                        r#"("IMAGE" "PNG" ("NAME" "logo.png") "<logo>" NIL "BASE64" 8 NIL ("INLINE" ("FILENAME" "logo.png"))) "RELATED")"#,
+                        r#"("APPLICATION" "PDF" NIL NIL NIL "BASE64" 8 NIL ("ATTACHMENT" ("FILENAME" "price.pdf"))) "MIXED")"#,
+                    );
+                    exchange(&mut server, r#"EXAMINE "INBOX""#, selected).await;
+                    exchange(&mut server, &format!("FETCH 1:1 {HEADER_QUERY}"),
+                        &format!("* 1 FETCH (UID 17 FLAGS (\\Seen) BODYSTRUCTURE {structure})\r\n")).await;
+                    exchange(&mut server, r#"EXAMINE "INBOX""#, selected).await;
+                    let body = "Content-Type: text/plain\r\n\r\nExample body.\r\n";
+                    exchange(&mut server, &format!("UID FETCH 17 {BODY_QUERY}"), &format!(
+                        "* 1 FETCH (UID 17 BODYSTRUCTURE {structure} RFC822.SIZE {} BODY[]<0> {{{}}}\r\n{body})\r\n",
+                        BODY_LIMIT + 2, body.len()
+                    )).await;
+                    for _ in 0..2 {
+                        exchange(&mut server, r#"EXAMINE "INBOX""#, selected).await;
+                        exchange(&mut server, "UID FETCH 17 (UID BODYSTRUCTURE)",
+                            &format!("* 1 FETCH (UID 17 BODYSTRUCTURE {structure})\r\n")).await;
+                    }
+                    exchange(&mut server, "UID FETCH 17 (UID BODY.PEEK[2]<0.9>)",
+                        "* 1 FETCH (UID 17 BODY[2]<0> {8}\r\nUERGAA==)\r\n").await;
+                });
+                let mut session = Client::new(client).login("mail@example.test", "fixture-only").await.unwrap();
+                let key = MessageKey { uid_validity: 20, uid: 17 };
+                assert!(fetch_folder(&mut session, "INBOX").await.unwrap()[0].has_attachments);
+                let message = fetch_message(&mut session, "INBOX", key, "mail@example.test").await.unwrap();
+                assert!(message.body_truncated);
+                assert_eq!(message.attachments.len(), 1);
+                assert_eq!(message.attachments[0].part, [2]);
+                assert_eq!(serde_json::to_value(&message.attachments[0]).unwrap()["name"], "price.pdf");
+                assert_eq!(fetch_attachment(&mut session, "INBOX", key, vec![1, 2]).await, Err(MailError::AttachmentUnavailable));
+                assert_eq!(fetch_attachment(&mut session, "INBOX", key, vec![2]).await.unwrap().1, b"PDF\0");
+                fixture.await.unwrap();
+            }).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn a_batch_reports_only_the_changes_confirmed_before_a_missing_uid() {
+        tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(5), async {
+                let (client, server) = duplex(4096);
+                let fixture = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    exchange(
+                        &mut server,
+                        r#"LOGIN "mail@example.test" "fixture-only""#,
+                        "",
+                    )
+                    .await;
+                    exchange(
+                        &mut server,
+                        r#"SELECT "INBOX""#,
+                        "* 2 EXISTS\r\n* OK [UIDVALIDITY 20] stable UID namespace\r\n",
+                    )
+                    .await;
+                    exchange(&mut server, "UID FETCH 17 (UID)", "* 1 FETCH (UID 17)\r\n").await;
+                    exchange(&mut server, "UID STORE 17 +FLAGS.SILENT (\\Seen)", "").await;
+                    exchange(&mut server, "UID FETCH 18 (UID)", "").await;
+                    let mut line = String::new();
+                    assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+                });
+                let mut session = Client::new(client)
+                    .login("mail@example.test", "fixture-only")
+                    .await
+                    .unwrap();
+                let keys = [17, 18, 19].map(|uid| MessageKey {
+                    uid_validity: 20,
+                    uid,
+                });
+                select_action_folder(&mut session, "INBOX", 20)
+                    .await
+                    .unwrap();
+                let result = change_selected_batch(
+                    &mut session,
+                    &keys,
+                    MessageAction::Read,
+                    None,
+                    Instant::now() + REQUEST_TIMEOUT,
+                )
+                .await;
+                assert_eq!(result.updated, keys[..1]);
+                assert_eq!(result.error, Some(MailError::MessageMissing));
+                drop(session);
+                fixture.await.unwrap();
+            })
+            .await
+            .unwrap();
+        });
     }
 
     #[test]

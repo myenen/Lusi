@@ -1,6 +1,6 @@
 use super::{
-    credentials, smtp::SmtpSettings, Account, Inbox, MailError, MailHeader, MessageAction,
-    MessageKey,
+    credentials, gmail, smtp::SmtpSettings, Account, AccountId, ConnectedAccount, Inbox, MailError,
+    MailHeader, MessageAction, MessageKey,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{borrow::Borrow, fs, path::Path, time::Duration};
@@ -28,6 +28,8 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
     let mut db = Connection::open(path).map_err(|_| MailError::Storage)?;
     db.busy_timeout(Duration::from_secs(3))
         .map_err(|_| MailError::Storage)?;
+    db.pragma_update(None, "foreign_keys", true)
+        .map_err(|_| MailError::Storage)?;
     migrate(&mut db).map_err(|_| MailError::Storage)?;
     Ok(db)
 }
@@ -35,7 +37,7 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let read_version =
         |db: &Connection| db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0));
-    if read_version(db)? == 5 {
+    if read_version(db)? == 7 {
         return Ok(());
     }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -51,7 +53,7 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             );
         ",
         )?,
-        1..=5 => {}
+        1..=7 => {}
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     if version < 2 {
@@ -95,13 +97,22 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
              PRAGMA user_version = 5;",
         )?;
     }
+    if version < 6 {
+        transaction.execute_batch(include_str!("migration-6.sql"))?;
+    }
+    if version < 7 {
+        transaction.execute_batch(
+            "ALTER TABLE inbox_headers ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 7;",
+        )?;
+    }
     transaction.commit()
 }
 
-pub fn account(db: &Connection) -> Result<Option<Account>, MailError> {
+pub fn account(db: &Connection, id: AccountId) -> Result<Option<Account>, MailError> {
     db.query_row(
-        "SELECT email, host, port, username, start_tls FROM account WHERE id = 1",
-        [],
+        "SELECT email, host, port, username, start_tls FROM account WHERE id = ?",
+        [id],
         |row| {
             Ok(Account {
                 email: row.get(0)?,
@@ -116,16 +127,70 @@ pub fn account(db: &Connection) -> Result<Option<Account>, MailError> {
     .map_err(|_| MailError::Storage)
 }
 
+pub(super) fn list_accounts(db: &Connection) -> Result<Vec<ConnectedAccount>, MailError> {
+    let mut query = db
+        .prepare("SELECT id, email FROM account ORDER BY id")
+        .map_err(|_| MailError::Storage)?;
+    let rows = query
+        .query_map([], |row| {
+            Ok(ConnectedAccount {
+                id: row.get(0)?,
+                email: row.get(1)?,
+            })
+        })
+        .map_err(|_| MailError::Storage)?;
+    rows.collect::<rusqlite::Result<_>>()
+        .map_err(|_| MailError::Storage)
+}
+
+pub(super) fn find_account(
+    db: &Connection,
+    email: &str,
+) -> Result<Option<ConnectedAccount>, MailError> {
+    Ok(list_accounts(db)?.into_iter().find(|account| {
+        account.email.eq_ignore_ascii_case(email) || gmail::same_mailbox(&account.email, email)
+    }))
+}
+
 pub fn snapshot(db: &mut Connection) -> Result<Option<Inbox>, MailError> {
     let transaction = db.transaction().map_err(|_| MailError::Storage)?;
-    let Some(account) = account(&transaction)? else {
-        return Ok(None);
+    let active = transaction
+        .query_row(
+            "SELECT account_id FROM active_account WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| MailError::Storage)?;
+    active.map(|id| snapshot_for(&transaction, id)).transpose()
+}
+
+pub(super) fn select_account(db: &mut Connection, id: AccountId) -> Result<Inbox, MailError> {
+    let transaction = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| MailError::Storage)?;
+    let snapshot = snapshot_for(&transaction, id)?;
+    set_active(&transaction, id)?;
+    transaction.commit().map_err(|_| MailError::Storage)?;
+    Ok(snapshot)
+}
+
+fn set_active(db: &Connection, id: AccountId) -> Result<(), MailError> {
+    db.execute(
+        "INSERT INTO active_account (id, account_id) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET account_id = excluded.account_id",
+        [id],
+    ).map(|_| ()).map_err(|_| MailError::Storage)
+}
+
+fn snapshot_for(db: &Connection, id: AccountId) -> Result<Inbox, MailError> {
+    let Some(account) = account(db, id)? else {
+        return Err(MailError::NoAccount);
     };
-    let mut statement = transaction.prepare(
-        "SELECT uid_validity, uid, sender, address, subject, sent_at, unread, starred FROM inbox_headers ORDER BY uid DESC"
+    let mut statement = db.prepare(
+        "SELECT uid_validity, uid, sender, address, subject, sent_at, unread, starred, has_attachments FROM inbox_headers WHERE account_id = ? ORDER BY uid DESC"
     ).map_err(|_| MailError::Storage)?;
     let headers = statement
-        .query_map([], |row| {
+        .query_map([id], |row| {
             Ok(MailHeader {
                 key: MessageKey {
                     uid_validity: row.get(0)?,
@@ -137,22 +202,29 @@ pub fn snapshot(db: &mut Connection) -> Result<Option<Inbox>, MailError> {
                 sent_at: row.get(5)?,
                 unread: row.get(6)?,
                 starred: row.get(7)?,
+                has_attachments: row.get(8)?,
             })
         })
         .map_err(|_| MailError::Storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|_| MailError::Storage)?;
-    Ok(Some(Inbox {
+    let can_send = account.uses_gmail_oauth() || has_outgoing(db, id)?;
+    let oauth_provider = account
+        .uses_gmail_oauth()
+        .then_some(super::discovery::OAuthProvider::Gmail);
+    Ok(Inbox {
+        account_id: id,
         email: account.email,
         headers,
-        can_send: has_outgoing(&transaction)?,
-    }))
+        can_send,
+        oauth_provider,
+    })
 }
 
-fn has_outgoing(db: &Connection) -> Result<bool, MailError> {
+fn has_outgoing(db: &Connection, id: AccountId) -> Result<bool, MailError> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM outgoing_server WHERE account_id = 1)",
-        [],
+        "SELECT EXISTS(SELECT 1 FROM outgoing_server WHERE account_id = ?)",
+        [id],
         |row| row.get(0),
     )
     .map_err(|_| MailError::Storage)
@@ -161,11 +233,12 @@ fn has_outgoing(db: &Connection) -> Result<bool, MailError> {
 pub(super) fn outgoing_connection(
     db: &Connection,
     directory: &Path,
+    id: AccountId,
 ) -> Result<(String, SmtpSettings, Zeroizing<String>), MailError> {
-    let email = account(db)?.ok_or(MailError::NoAccount)?.email;
+    let email = account(db, id)?.ok_or(MailError::NoAccount)?.email;
     let (settings, sealed): (SmtpSettings, Vec<u8>) = db.query_row(
-        "SELECT host, port, username, start_tls, encrypted_password FROM outgoing_server WHERE account_id = 1",
-        [], |row| Ok((SmtpSettings {
+        "SELECT host, port, username, start_tls, encrypted_password FROM outgoing_server WHERE account_id = ?",
+        [id], |row| Ok((SmtpSettings {
             host: row.get(0)?, port: row.get(1)?, username: row.get(2)?, start_tls: row.get(3)?,
         }, row.get(4)?)),
     ).optional().map_err(|_| MailError::Storage)?.ok_or(MailError::NoSmtp)?;
@@ -173,10 +246,14 @@ pub(super) fn outgoing_connection(
     Ok((email, settings, password))
 }
 
-pub fn contains_message(db: &Connection, key: MessageKey) -> Result<bool, MailError> {
+pub fn contains_message(
+    db: &Connection,
+    id: AccountId,
+    key: MessageKey,
+) -> Result<bool, MailError> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM inbox_headers WHERE uid_validity = ? AND uid = ?)",
-        params![key.uid_validity, key.uid],
+        "SELECT EXISTS(SELECT 1 FROM inbox_headers WHERE account_id = ? AND uid_validity = ? AND uid = ?)",
+        params![id, key.uid_validity, key.uid],
         |row| row.get(0),
     )
     .map_err(|_| MailError::Storage)
@@ -184,6 +261,7 @@ pub fn contains_message(db: &Connection, key: MessageKey) -> Result<bool, MailEr
 
 pub(super) fn apply_cached_action(
     db: &Connection,
+    id: AccountId,
     key: MessageKey,
     action: MessageAction,
 ) -> Result<(), MailError> {
@@ -197,8 +275,24 @@ pub(super) fn apply_cached_action(
         }
     };
     db.execute(
-        &format!("{statement} WHERE uid_validity = ? AND uid = ?"),
-        params![key.uid_validity, key.uid],
+        &format!("{statement} WHERE account_id = ? AND uid_validity = ? AND uid = ?"),
+        params![id, key.uid_validity, key.uid],
+    )
+    .map(|_| ())
+    .map_err(|_| MailError::Storage)
+}
+
+pub(super) fn record_opened_message(
+    db: &Connection,
+    id: AccountId,
+    key: MessageKey,
+    seen: bool,
+    has_attachments: bool,
+) -> Result<(), MailError> {
+    db.execute(
+        "UPDATE inbox_headers SET unread = unread AND NOT ?, has_attachments = has_attachments OR ?
+         WHERE account_id = ? AND uid_validity = ? AND uid = ?",
+        params![seen, has_attachments, id, key.uid_validity, key.uid],
     )
     .map(|_| ())
     .map_err(|_| MailError::Storage)
@@ -215,52 +309,97 @@ pub fn save_new_account(
     let transaction = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| MailError::Storage)?;
-    if account(&transaction)?.is_some() {
+    if find_account(&transaction, &details.email)?.is_some() {
         return Err(MailError::AlreadyConnected);
     }
     let sealed = credentials::seal(directory, &details, password)?;
-    transaction
-        .execute(
-            "INSERT INTO account (id, email, host, port, username, start_tls, encrypted_password)
-             VALUES (1, ?, ?, ?, ?, ?, ?)",
-            params![
-                details.email,
-                details.host,
-                details.port,
-                details.username,
-                details.start_tls,
-                sealed
-            ],
-        )
-        .map_err(|_| MailError::Storage)?;
+    let id = insert_account(&transaction, &details, Some(sealed))?;
     let sealed = credentials::seal_outgoing(directory, &details.email, outgoing, password)?;
     transaction.execute(
         "INSERT INTO outgoing_server (account_id, host, port, username, start_tls, encrypted_password)
-         VALUES (1, ?, ?, ?, ?, ?)",
-        params![outgoing.host, outgoing.port, outgoing.username, outgoing.start_tls, sealed],
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![id, outgoing.host, outgoing.port, outgoing.username, outgoing.start_tls, sealed],
     ).map_err(|_| MailError::Storage)?;
-    replace_headers(&transaction, &headers).map_err(|_| MailError::Storage)?;
+    replace_headers(&transaction, id, &headers).map_err(|_| MailError::Storage)?;
+    set_active(&transaction, id)?;
     transaction.commit().map_err(|_| MailError::Storage)?;
     Ok(Inbox {
+        account_id: id,
         email: details.email,
         headers,
         can_send: true,
+        oauth_provider: None,
     })
+}
+
+pub(super) fn save_gmail_account(
+    db: &mut Connection,
+    details: Account,
+    reconnect_id: Option<AccountId>,
+    headers: Vec<MailHeader>,
+    persist_refresh: impl FnOnce(&str) -> Result<(), MailError>,
+) -> Result<Inbox, MailError> {
+    let transaction = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| MailError::Storage)?;
+    let existing = find_account(&transaction, &details.email)?;
+    let id = match (existing, reconnect_id) {
+        (Some(account), Some(id)) if account.id == id && account.email == details.email => id,
+        (Some(_), _) => return Err(MailError::AlreadyConnected),
+        (None, Some(_)) => return Err(MailError::NoAccount),
+        (None, None) => {
+            let id = insert_account(&transaction, &details, None)?;
+            set_active(&transaction, id)?;
+            id
+        }
+    };
+    replace_headers(&transaction, id, &headers).map_err(|_| MailError::Storage)?;
+    persist_refresh(&details.email)?;
+    transaction.commit().map_err(|_| MailError::Storage)?;
+    Ok(Inbox {
+        account_id: id,
+        email: details.email,
+        headers,
+        can_send: true,
+        oauth_provider: Some(super::discovery::OAuthProvider::Gmail),
+    })
+}
+
+fn insert_account(
+    db: &Connection,
+    details: &Account,
+    sealed: Option<Vec<u8>>,
+) -> Result<AccountId, MailError> {
+    db.execute(
+        "INSERT INTO account (email, host, port, username, start_tls, encrypted_password)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![
+            details.email,
+            details.host,
+            details.port,
+            details.username,
+            details.start_tls,
+            sealed
+        ],
+    )
+    .map(|_| db.last_insert_rowid())
+    .map_err(|_| MailError::Storage)
 }
 
 pub(super) fn connection_details<C: Borrow<keyring::Entry>>(
     db: &mut Connection,
     directory: &Path,
+    id: AccountId,
     legacy_entry: impl FnOnce(&Account) -> Result<C, MailError>,
 ) -> Result<(Account, Zeroizing<String>), MailError> {
     let transaction = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| MailError::Storage)?;
-    let details = account(&transaction)?.ok_or(MailError::NoAccount)?;
+    let details = account(&transaction, id)?.ok_or(MailError::NoAccount)?;
     let (sealed, cleanup_pending): (Option<Vec<u8>>, bool) = transaction
         .query_row(
-            "SELECT encrypted_password, legacy_cleanup_pending FROM account WHERE id = 1",
-            [],
+            "SELECT encrypted_password, legacy_cleanup_pending FROM account WHERE id = ?",
+            [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| MailError::Storage)?;
@@ -282,8 +421,8 @@ pub(super) fn connection_details<C: Borrow<keyring::Entry>>(
         let sealed = credentials::seal(directory, &details, &password)?;
         transaction
             .execute(
-                "UPDATE account SET encrypted_password = ?, legacy_cleanup_pending = 1 WHERE id = 1",
-                [sealed],
+                "UPDATE account SET encrypted_password = ?, legacy_cleanup_pending = 1 WHERE id = ?",
+                params![sealed, id],
             )
             .map_err(|_| MailError::Storage)?;
         (password, Some(entry))
@@ -298,8 +437,8 @@ pub(super) fn connection_details<C: Borrow<keyring::Entry>>(
         )
     }) {
         let _ = db.execute(
-            "UPDATE account SET legacy_cleanup_pending = 0 WHERE id = 1",
-            [],
+            "UPDATE account SET legacy_cleanup_pending = 0 WHERE id = ?",
+            [id],
         );
     }
     Ok((details, password))
@@ -307,30 +446,37 @@ pub(super) fn connection_details<C: Borrow<keyring::Entry>>(
 
 pub fn update_snapshot(
     db: &mut Connection,
-    details: Account,
+    id: AccountId,
     headers: Vec<MailHeader>,
 ) -> Result<Inbox, MailError> {
     let transaction = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| MailError::Storage)?;
-    replace_headers(&transaction, &headers).map_err(|_| MailError::Storage)?;
-    let can_send = has_outgoing(&transaction)?;
+    let details = account(&transaction, id)?.ok_or(MailError::NoAccount)?;
+    replace_headers(&transaction, id, &headers).map_err(|_| MailError::Storage)?;
+    let can_send = details.uses_gmail_oauth() || has_outgoing(&transaction, id)?;
+    let oauth_provider = details
+        .uses_gmail_oauth()
+        .then_some(super::discovery::OAuthProvider::Gmail);
     transaction.commit().map_err(|_| MailError::Storage)?;
     Ok(Inbox {
+        account_id: id,
         email: details.email,
         headers,
         can_send,
+        oauth_provider,
     })
 }
 
-fn replace_headers(db: &Connection, headers: &[MailHeader]) -> rusqlite::Result<()> {
-    db.execute("DELETE FROM inbox_headers", [])?;
+fn replace_headers(db: &Connection, id: AccountId, headers: &[MailHeader]) -> rusqlite::Result<()> {
+    db.execute("DELETE FROM inbox_headers WHERE account_id = ?", [id])?;
     let mut statement = db.prepare(
-        "INSERT INTO inbox_headers (uid_validity, uid, sender, address, subject, sent_at, unread, starred)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO inbox_headers (account_id, uid_validity, uid, sender, address, subject, sent_at, unread, starred, has_attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )?;
     for header in headers {
         statement.execute(params![
+            id,
             header.key.uid_validity,
             header.key.uid,
             header.sender,
@@ -339,6 +485,7 @@ fn replace_headers(db: &Connection, headers: &[MailHeader]) -> rusqlite::Result<
             header.sent_at,
             header.unread,
             header.starred,
+            header.has_attachments,
         ])?;
     }
     Ok(())
@@ -347,6 +494,150 @@ fn replace_headers(db: &Connection, headers: &[MailHeader]) -> rusqlite::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_the_old_current_account_and_its_cached_inbox() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE account (id INTEGER PRIMARY KEY CHECK (id = 1), email TEXT, host TEXT, port INTEGER,
+                 username TEXT, start_tls INTEGER, encrypted_password BLOB, legacy_cleanup_pending INTEGER);
+             CREATE TABLE outgoing_server (account_id INTEGER PRIMARY KEY REFERENCES account(id), host TEXT, port INTEGER,
+                 username TEXT, start_tls INTEGER, encrypted_password BLOB);
+             CREATE TABLE inbox_headers (uid_validity INTEGER, uid INTEGER, sender TEXT, address TEXT,
+                 subject TEXT, sent_at INTEGER, unread INTEGER, starred INTEGER);
+             INSERT INTO account VALUES (1, 'fixture@example.test', 'imap.example.test', 993, 'fixture', 0, x'1234', 1);
+             INSERT INTO outgoing_server VALUES (1, 'smtp.example.test', 465, NULL, 0, x'5678');
+             INSERT INTO inbox_headers VALUES (4, 7, 'Sender', 'sender@example.test', 'Hello', NULL, 1, 1);
+             PRAGMA user_version=5;",
+        ).unwrap();
+        migrate(&mut db).unwrap();
+        let loaded = snapshot(&mut db).unwrap().unwrap();
+        assert_eq!(loaded.account_id, 1);
+        assert_eq!(loaded.email, "fixture@example.test");
+        assert!(loaded.can_send && loaded.headers[0].starred);
+        assert_eq!(
+            loaded.headers[0].key,
+            MessageKey {
+                uid_validity: 4,
+                uid: 7
+            }
+        );
+        let secrets: (String, String, bool) = db.query_row(
+            "SELECT hex(account.encrypted_password), hex(outgoing_server.encrypted_password), legacy_cleanup_pending
+             FROM account JOIN outgoing_server ON account.id = outgoing_server.account_id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(secrets, ("1234".into(), "5678".into(), true));
+    }
+
+    #[test]
+    fn keeps_credentials_and_matching_message_keys_separate_between_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mail.sqlite3");
+        let mut db = open(&path).unwrap();
+        let key = MessageKey {
+            uid_validity: 5,
+            uid: 10,
+        };
+        let header = |subject: &str| MailHeader {
+            key,
+            sender: "Sender".into(),
+            address: "sender@example.test".into(),
+            subject: subject.into(),
+            sent_at: None,
+            unread: true,
+            starred: false,
+            has_attachments: false,
+        };
+        let connect = |db: &mut Connection, email: &str, label: &str| {
+            save_new_account(
+                db,
+                directory.path(),
+                Account {
+                    email: email.into(),
+                    host: "imap.example.test".into(),
+                    port: 993,
+                    username: None,
+                    start_tls: false,
+                },
+                &SmtpSettings {
+                    host: "smtp.example.test".into(),
+                    port: 465,
+                    username: None,
+                    start_tls: false,
+                },
+                label,
+                vec![header(label)],
+            )
+            .unwrap()
+            .account_id
+        };
+        let first = connect(&mut db, "first@example.test", "first password");
+        let second = connect(&mut db, "second@example.test", "second password");
+        assert_ne!(first, second);
+        assert_eq!(snapshot(&mut db).unwrap().unwrap().account_id, second);
+        apply_cached_action(&db, first, key, MessageAction::Star).unwrap();
+        assert!(!snapshot(&mut db).unwrap().unwrap().headers[0].starred);
+        assert!(select_account(&mut db, first).unwrap().headers[0].starred);
+        assert!(matches!(
+            select_account(&mut db, 999),
+            Err(MailError::NoAccount)
+        ));
+        drop(db);
+        let mut db = open(&path).unwrap();
+        assert_eq!(snapshot(&mut db).unwrap().unwrap().account_id, first);
+        assert_eq!(
+            outgoing_connection(&db, directory.path(), second)
+                .unwrap()
+                .2
+                .as_str(),
+            "second password"
+        );
+        update_snapshot(&mut db, second, vec![header("updated second message")]).unwrap();
+        assert_eq!(
+            snapshot(&mut db).unwrap().unwrap().headers[0].subject,
+            "first password"
+        );
+        assert_eq!(list_accounts(&db).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn gmail_snapshot_requires_a_saved_refresh_token_and_can_be_reauthorized() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        let (account, _) = super::super::discovery::gmail_servers("fixture@gmail.com");
+        assert_eq!(
+            save_gmail_account(&mut db, account.clone(), None, vec![], |_| Err(
+                MailError::Credentials
+            ))
+            .err(),
+            Some(MailError::Credentials)
+        );
+        assert!(snapshot(&mut db).unwrap().is_none());
+        for reconnect in [None, Some(1)] {
+            save_gmail_account(&mut db, account.clone(), reconnect, vec![], |email| {
+                assert_eq!(email, "fixture@gmail.com");
+                Ok(())
+            })
+            .unwrap();
+        }
+        let reopened = snapshot(&mut db).unwrap().unwrap();
+        assert!(reopened.can_send);
+        assert_eq!(
+            reopened.oauth_provider,
+            Some(super::super::discovery::OAuthProvider::Gmail)
+        );
+        let password_present: bool = db
+            .query_row(
+                "SELECT encrypted_password IS NOT NULL FROM account WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!password_present);
+    }
 
     #[test]
     fn existing_accounts_keep_email_as_login_after_migration() {
@@ -358,7 +649,7 @@ mod tests {
         )
         .unwrap();
         migrate(&mut db).unwrap();
-        let legacy = account(&db).unwrap().unwrap();
+        let legacy = account(&db, 1).unwrap().unwrap();
         assert_eq!(legacy.login(), "mail@example.test");
         assert!(!legacy.start_tls);
         db.execute(
@@ -366,7 +657,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let configured = account(&db).unwrap().unwrap();
+        let configured = account(&db, 1).unwrap().unwrap();
         assert_eq!(configured.login(), "mail");
         assert!(configured.start_tls);
         assert_eq!(configured.email, legacy.email);
@@ -439,19 +730,20 @@ mod tests {
             .4
             .windows(password.len())
             .any(|part| part == password.as_bytes()));
-        let (email, settings, smtp_password) = outgoing_connection(&db, directory.path()).unwrap();
+        let (email, settings, smtp_password) =
+            outgoing_connection(&db, directory.path(), 1).unwrap();
         assert_eq!(email, "mail@example.test");
         assert_eq!(settings, outgoing);
         assert_eq!(smtp_password.as_str(), password);
         fn no_legacy(_: &Account) -> Result<keyring::Entry, MailError> {
             panic!("encrypted accounts must not consult the OS credential store");
         }
-        let (_, stored) = connection_details(&mut db, directory.path(), no_legacy).unwrap();
+        let (_, stored) = connection_details(&mut db, directory.path(), 1, no_legacy).unwrap();
         assert_eq!(stored.as_str(), password);
 
         fs::remove_file(directory.path().join("credentials.key")).unwrap();
         assert_eq!(
-            connection_details(&mut db, directory.path(), no_legacy).err(),
+            connection_details(&mut db, directory.path(), 1, no_legacy).err(),
             Some(MailError::Credentials)
         );
         assert!(!directory.path().join("credentials.key").exists());
@@ -474,18 +766,20 @@ mod tests {
         entry.set_password("legacy-test-password").unwrap();
 
         assert_eq!(
-            connection_details(&mut db, directory.path(), |_| Ok(&entry)).err(),
+            connection_details(&mut db, directory.path(), 1, |_| Ok(&entry)).err(),
             Some(MailError::Storage)
         );
         assert_eq!(entry.get_password().unwrap(), "legacy-test-password");
 
         db.execute_batch("DROP TRIGGER reject_upgrade;").unwrap();
-        let (_, password) = connection_details(&mut db, directory.path(), |_| Ok(&entry)).unwrap();
+        let (_, password) =
+            connection_details(&mut db, directory.path(), 1, |_| Ok(&entry)).unwrap();
         assert_eq!(password.as_str(), "legacy-test-password");
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
         let (_, reopened) = connection_details(
             &mut db,
             directory.path(),
+            1,
             |_| -> Result<keyring::Entry, MailError> {
                 panic!("a migrated account must not consult the OS credential store");
             },
@@ -515,13 +809,14 @@ mod tests {
             sent_at: None,
             unread: true,
             starred: false,
+            has_attachments: true,
         };
-        let details = account(&db).unwrap().unwrap();
-        update_snapshot(&mut db, details.clone(), vec![header(7)]).unwrap();
-        assert!(update_snapshot(&mut db, details.clone(), vec![header(9), header(9)]).is_err());
-        assert!(contains_message(&db, header(7).key).unwrap());
-        update_snapshot(&mut db, details, vec![header(9)]).unwrap();
-        assert!(!contains_message(&db, header(7).key).unwrap());
+        set_active(&db, 1).unwrap();
+        update_snapshot(&mut db, 1, vec![header(7)]).unwrap();
+        assert!(update_snapshot(&mut db, 1, vec![header(9), header(9)]).is_err());
+        assert!(contains_message(&db, 1, header(7).key).unwrap());
+        update_snapshot(&mut db, 1, vec![header(9)]).unwrap();
+        assert!(!contains_message(&db, 1, header(7).key).unwrap());
         assert_eq!(snapshot(&mut db).unwrap().unwrap().headers, vec![header(9)]);
     }
 }
