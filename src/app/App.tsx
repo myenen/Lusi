@@ -1,6 +1,6 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { Settings } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { IconButton, type Filter } from '../components/ui/Controls';
 import { AccountSetup } from '../features/accounts/AccountSetup';
 import {
@@ -16,6 +16,7 @@ import { MessageReader } from '../features/mail/MessageReader';
 import { Sidebar } from '../features/mail/Sidebar';
 import { SidebarAccount } from '../features/mail/SidebarAccount';
 import { useMailSounds } from '../features/mail/send-sound';
+import { useOlderMessages } from '../features/mail/useOlderMessages';
 import { SettingsDrawer } from '../features/settings/SettingsDrawer';
 import { catalog, LocaleContext } from './i18n';
 import { PaneDivider } from './PaneDivider';
@@ -26,10 +27,12 @@ import { useUiPreferences } from './ui-preferences';
 const hasMacTitleBar = /\bMacintosh\b/.test(navigator.userAgent) && navigator.maxTouchPoints < 2;
 const folderOrder = ['inbox', 'flagged', 'sent', 'drafts', 'archive', 'trash', 'junk', 'all', 'custom'];
 const noDrafts: Record<string, Draft> = {};
+const emptyHeaders: ImapHeader[] = [];
 
 export function App() {
   const desktop = isTauri();
   const [inbox, setInbox] = useState<ConnectedInbox | null | undefined>(() => desktop ? undefined : null);
+  const [startupAccountId, setStartupAccountId] = useState<number>();
   const [accountDrafts, setAccountDrafts] = useState<Record<number, Record<string, Draft>>>({});
   const [accountLoadFailed, setAccountLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -47,7 +50,11 @@ export function App() {
     if (!desktop) return;
     let current = true;
     loadConnectedInbox().then(
-      (loaded) => { if (current) setInbox(loaded); },
+      (loaded) => {
+        if (!current) return;
+        setStartupAccountId(loaded?.accountId);
+        setInbox(loaded);
+      },
       () => { if (current) setAccountLoadFailed(true); },
     );
     return () => { current = false; };
@@ -69,7 +76,10 @@ export function App() {
         </main>}
         {ready && inbox !== undefined && (inbox
           ? <MailboxWorkspace key={inbox.accountId} ui={ui} themeId={themeId} colorScheme={colorScheme}
-            inbox={inbox} onAccountChanged={setInbox}
+            inbox={inbox} syncOnOpen={startupAccountId === inbox.accountId} onAccountChanged={(updated) => {
+              setStartupAccountId(undefined);
+              setInbox(updated);
+            }}
             onRefresh={(update) => setInbox((current) => current?.accountId === inbox.accountId
               ? (typeof update === 'function' ? update(current) : update) : current)}
             drafts={accountDrafts[inbox.accountId] ?? noDrafts}
@@ -84,11 +94,12 @@ export function App() {
   );
 }
 
-function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, onRefresh, drafts, setDrafts }: {
+function MailboxWorkspace({ ui, themeId, colorScheme, inbox, syncOnOpen, onAccountChanged, onRefresh, drafts, setDrafts }: {
   ui: ReturnType<typeof useUiPreferences>;
   themeId: string;
   colorScheme: 'light' | 'dark';
   inbox: ConnectedInbox;
+  syncOnOpen: boolean;
   onAccountChanged: (inbox: ConnectedInbox) => void;
   onRefresh: Dispatch<SetStateAction<ConnectedInbox>>;
   drafts: Record<string, Draft>;
@@ -106,11 +117,14 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
   const [folderError, setFolderError] = useState<unknown>();
   const [foldersLoading, setFoldersLoading] = useState(true);
   const [foldersAttempt, setFoldersAttempt] = useState(0);
-  const [folderResult, setFolderResult] = useState<{ folder: string; headers: ImapHeader[] } | { folder: string; error: unknown }>();
+  const [folderResult, setFolderResult] = useState<{ folder: string; headers: ImapHeader[]; before?: MessageKey } | { folder: string; error: unknown }>();
   const [folderAttempt, setFolderAttempt] = useState(0);
   const [folderRefreshing, setFolderRefreshing] = useState(false);
   const [readerAttempt, setReaderAttempt] = useState(0);
   const [inboxRefreshing, setInboxRefreshing] = useState(false);
+  const [startupSyncing, setStartupSyncing] = useState(syncOnOpen);
+  const startupRequest = useRef<Promise<ConnectedInbox>>(undefined);
+  const [inboxBefore, setInboxBefore] = useState(() => inbox.headers.at(-1)?.key);
   const [inboxError, setInboxError] = useState<unknown>();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -139,12 +153,16 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
   const savedAccounts = accounts ?? [{ id: accountId, email: inbox.email }];
   const isInbox = folder === inboxFolder.id;
   const result = folderResult?.folder === folder ? folderResult : undefined;
-  const headers = isInbox ? inbox.headers : result && 'headers' in result ? result.headers : [];
-  const busy = isInbox ? inboxRefreshing : !result;
+  const folderPage = result && 'headers' in result ? result : undefined;
+  const baseHeaders = isInbox ? inbox.headers : folderPage?.headers ?? emptyHeaders;
+  const older = useOlderMessages(accountId, folder, isInbox ? inboxBefore : folderPage?.before);
+  const headers = useMemo(() => [...baseHeaders, ...older.headers], [baseHeaders, older.headers]);
+  const busy = isInbox ? startupSyncing || inboxRefreshing : !result;
   const failure = isInbox ? inboxError : result && 'error' in result ? result.error : undefined;
   const searchText = query.trim();
   const needle = searchText.toLocaleLowerCase(locale);
-  const rows = connectedMessageRows(headers, locale, { unknownSender: labels.connectedInbox.unknownSender, untitled: labels.untitled });
+  const rows = useMemo(() => connectedMessageRows(headers, locale, { unknownSender: labels.connectedInbox.unknownSender, untitled: labels.untitled }),
+    [headers, labels, locale]);
   const messages = rows.filter((message) => (filter === 'all' || message.unread) && (
       message.address.toLowerCase().includes(searchText.toLowerCase())
       || [message.sender, message.subject].some((value) => value.toLocaleLowerCase(locale).includes(needle))
@@ -203,11 +221,40 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
     if (isInbox) return;
     let current = true;
     readConnectedFolder(accountId, folder).then(
-      (headers) => { if (current) setFolderResult({ folder, headers }); },
+      (headers) => { if (current) setFolderResult({ folder, headers, before: headers.at(-1)?.key }); },
       (error: unknown) => { if (current) setFolderResult({ folder, error: error ?? 'unknown' }); },
     ).finally(() => { if (current) setFolderRefreshing(false); });
     return () => { current = false; };
   }, [accountId, folder, folderAttempt, isInbox]);
+
+  function replaceInbox(updated: ConnectedInbox) {
+    setInboxBefore(updated.headers.at(-1)?.key);
+    onRefresh(updated);
+  }
+
+  const applyStartupSnapshot = useEffectEvent((updated: ConnectedInbox) => {
+    older.reset(inboxFolder.id);
+    replaceInbox(updated);
+    if (isInbox) setSelection((current) => current && new Set(
+      updated.headers.map(({ key }) => connectedMessageId(key)).filter((id) => current.has(id)),
+    ));
+  });
+
+  useEffect(() => {
+    if (!syncOnOpen) return;
+    let current = true;
+    // React may replay effects on startup. Reuse the same IMAP request.
+    startupRequest.current ??= refreshConnectedInbox(accountId);
+    void startupRequest.current.then(
+      (updated) => { if (current) applyStartupSnapshot(updated); },
+      (error: unknown) => { if (current) setInboxError(error ?? 'unknown'); },
+    ).finally(() => {
+      if (!current) return;
+      startupRequest.current = undefined;
+      setStartupSyncing(false);
+    });
+    return () => { current = false; };
+  }, [accountId, syncOnOpen]);
 
   function refresh() {
     if (busy || pendingAction.current) return;
@@ -219,6 +266,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
       setFoldersAttempt((attempt) => attempt + 1);
     }
     if (!isInbox) {
+      older.reset();
       setFolderRefreshing(true);
       setFolderResult(undefined);
       setFolderAttempt((attempt) => attempt + 1);
@@ -226,7 +274,11 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
     }
     setInboxRefreshing(true);
     setInboxError(undefined);
-    void refreshConnectedInbox(accountId).then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'))
+    void refreshConnectedInbox(accountId).then((updated) => {
+      // An unrelated folder may have started paging while Inbox refreshed.
+      older.reset(inboxFolder.id);
+      replaceInbox(updated);
+    }, (error: unknown) => setInboxError(error ?? 'unknown'))
       .finally(() => setInboxRefreshing(false));
   }
 
@@ -246,11 +298,12 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
   }
 
   function patchHeaders(source: string, updateHeaders: (headers: ImapHeader[]) => ImapHeader[]) {
+    older.patch(source, updateHeaders);
     if (source === inboxFolder.id) {
       onRefresh((current) => ({ ...current, headers: updateHeaders(current.headers) }));
     } else {
       setFolderResult((current) => current?.folder === source && 'headers' in current
-        ? { folder: source, headers: updateHeaders(current.headers) } : current);
+        ? { ...current, headers: updateHeaders(current.headers) } : current);
     }
   }
 
@@ -286,7 +339,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
       if (isMove) {
         if (action === 'archive' || action === 'trash') void sounds.play(action);
         if (action === 'restore') {
-          await refreshConnectedInbox(accountId).then(onRefresh, (error: unknown) => setInboxError(error ?? 'unknown'));
+          await refreshConnectedInbox(accountId).then(replaceInbox, (error: unknown) => setInboxError(error ?? 'unknown'));
         }
       }
     } catch (error) {
@@ -424,6 +477,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
 
   function chooseFolder(next: string) {
     if (next !== folder) {
+      older.reset();
       setActionError(undefined);
       setFolderRefreshing(false);
       setFolderResult(undefined);
@@ -462,7 +516,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
           appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={false} />}
           divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={false} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
         />
-        <MailList title={currentFolder ? folderDisplayName(currentFolder, labels) : folder} messages={messages} selectedId={selected?.id}
+        <MailList key={`list:${folder}`} title={currentFolder ? folderDisplayName(currentFolder, labels) : folder} messages={messages} selectedId={selected?.id}
           search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
           oldestFirst={oldestFirst} onSort={setOldestFirst}
           onSearch={(value) => { setQuery(value); if (selection) setSelection(new Set()); }}
@@ -477,20 +531,24 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
             const header = headers.find(({ key }) => connectedMessageId(key) === id);
             if (header) void handleAction(action, 'list', header.key);
           }}
-          busy={busy || actionBusy} refreshing={isInbox ? inboxRefreshing : folderRefreshing} onRefresh={refresh}
+          busy={busy || actionBusy} refreshing={isInbox ? startupSyncing || inboxRefreshing : folderRefreshing} onRefresh={refresh}
+          older={older.cursor && !(isInbox && startupSyncing) && failure === undefined ? {
+            cursor: connectedMessageId(older.cursor), loading: older.loading, onLoad: () => { if (!busy && !pendingAction.current) void older.load(); },
+            error: older.error === undefined ? undefined : imapErrorMessage(older.error, labels.imapErrors),
+          } : undefined}
           status={busy ? <p className="mailbox-status" role="status">{labels.connectedInbox.refreshing}</p> :
             failure !== undefined ? <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p> :
               actionError?.folder === folder && actionError.source === 'list' &&
                 <p className="account-setup-error" role="alert">{imapErrorMessage(actionError.error, labels.imapErrors)}</p>}
           divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={false} onResize={(listWidth, save) => update({ listWidth }, save)} />}
         />
-        <MessageReader key={folder} message={selected} opened={openedMessage} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
+        <MessageReader key={`reader:${folder}`} message={selected} opened={openedMessage} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
           onRespond={respond} canRespond={canRespond} canForward={canForward}
           onAction={(action) => { if (selectedHeader) void handleAction(action, 'reader', selectedHeader.key); }} actionBusy={actionBusy || busy}
           actionError={actionError?.folder === folder && actionError.source === 'reader' ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
           canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
           body={selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`} accountId={accountId} folder={folder} messageKey={selectedHeader.key}
-            themeId={themeId} colorScheme={colorScheme}
+            unread={selectedHeader.unread} themeId={themeId} colorScheme={colorScheme}
             onOpened={(message) => {
               setOpened({ id: messageId, message });
               if (message.attachments?.length && !selectedHeader.hasAttachments) {
@@ -512,7 +570,8 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, onAccountChanged, o
       {settingsOpen && <SettingsDrawer accountId={accountId} connectedEmail={inbox.email} preferences={preferences} themeId={themeId} onUpdate={update} onAccountChanged={onAccountChanged}
         accounts={savedAccounts} accountsLoadFailed={accountsLoadFailed} onAccountSwitch={switchAccount}
         onGoogleReconnected={inbox.oauthProvider === 'gmail' ? (updated) => {
-          onRefresh(updated);
+          older.reset();
+          replaceInbox(updated);
           setInboxError(undefined);
           setFoldersAttempt((attempt) => attempt + 1);
           setFolderAttempt((attempt) => attempt + 1);

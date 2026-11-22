@@ -1,10 +1,12 @@
 use super::{
     credentials, gmail, smtp::SmtpSettings, Account, AccountId, ConnectedAccount, Inbox, MailError,
-    MailHeader, MessageAction, MessageKey,
+    MailHeader, MessageAction, MessageContent, MessageKey,
 };
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::{borrow::Borrow, fs, path::Path, time::Duration};
 use zeroize::Zeroizing;
+
+const CACHED_MESSAGES_PER_ACCOUNT: u32 = 256;
 
 pub fn open(path: &Path) -> Result<Connection, MailError> {
     let directory = path.parent().ok_or(MailError::Storage)?;
@@ -37,7 +39,7 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let read_version =
         |db: &Connection| db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0));
-    if read_version(db)? == 7 {
+    if read_version(db)? == 9 {
         return Ok(());
     }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -53,7 +55,7 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             );
         ",
         )?,
-        1..=7 => {}
+        1..=9 => {}
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     if version < 2 {
@@ -106,7 +108,45 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
              PRAGMA user_version = 7;",
         )?;
     }
+    if version < 8 {
+        transaction.execute_batch(include_str!("migration-8.sql"))?;
+    }
+    if version < 9 {
+        transaction.execute_batch(
+            "ALTER TABLE account ADD COLUMN inbox_unread INTEGER CHECK (inbox_unread BETWEEN 0 AND 4294967295);
+             PRAGMA user_version = 9;",
+        )?;
+    }
     transaction.commit()
+}
+
+pub(super) fn remember_unread(
+    db: &Connection,
+    id: AccountId,
+    unread: u32,
+) -> Result<(), MailError> {
+    db.execute(
+        "UPDATE account SET inbox_unread = ? WHERE id = ?",
+        params![unread, id],
+    )
+    .map(|_| ())
+    .map_err(|_| MailError::Storage)
+}
+
+pub(super) fn active_unread(db: &Connection) -> Result<Option<u32>, MailError> {
+    db.query_row(
+        "SELECT account.inbox_unread FROM active_account JOIN account ON account.id = active_account.account_id WHERE active_account.id = 1",
+        [], |row| row.get::<_, Option<u32>>(0),
+    ).optional().map(Option::flatten).map_err(|_| MailError::Storage)
+}
+
+pub(super) fn is_active(db: &Connection, id: AccountId) -> Result<bool, MailError> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM active_account WHERE id = 1 AND account_id = ?)",
+        [id],
+        |row| row.get(0),
+    )
+    .map_err(|_| MailError::Storage)
 }
 
 pub fn account(db: &Connection, id: AccountId) -> Result<Option<Account>, MailError> {
@@ -246,11 +286,8 @@ pub(super) fn outgoing_connection(
     Ok((email, settings, password))
 }
 
-pub fn contains_message(
-    db: &Connection,
-    id: AccountId,
-    key: MessageKey,
-) -> Result<bool, MailError> {
+#[cfg(test)]
+fn contains_message(db: &Connection, id: AccountId, key: MessageKey) -> Result<bool, MailError> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM inbox_headers WHERE account_id = ? AND uid_validity = ? AND uid = ?)",
         params![id, key.uid_validity, key.uid],
@@ -262,9 +299,19 @@ pub fn contains_message(
 pub(super) fn apply_cached_action(
     db: &Connection,
     id: AccountId,
+    folder: &str,
     key: MessageKey,
     action: MessageAction,
 ) -> Result<(), MailError> {
+    if matches!(
+        action,
+        MessageAction::Archive | MessageAction::Trash | MessageAction::Restore
+    ) {
+        remove_cached_message(db, id, folder, key)?;
+    }
+    if !folder.eq_ignore_ascii_case("INBOX") {
+        return Ok(());
+    }
     let statement = match action {
         MessageAction::Read => "UPDATE inbox_headers SET unread = 0",
         MessageAction::Unread => "UPDATE inbox_headers SET unread = 1",
@@ -277,6 +324,72 @@ pub(super) fn apply_cached_action(
     db.execute(
         &format!("{statement} WHERE account_id = ? AND uid_validity = ? AND uid = ?"),
         params![id, key.uid_validity, key.uid],
+    )
+    .map(|_| ())
+    .map_err(|_| MailError::Storage)
+}
+
+fn cache_folder(folder: &str) -> &str {
+    if folder.eq_ignore_ascii_case("INBOX") {
+        "INBOX"
+    } else {
+        folder
+    }
+}
+
+pub(super) fn cached_message(
+    db: &Connection,
+    id: AccountId,
+    folder: &str,
+    key: MessageKey,
+) -> Result<Option<MessageContent>, MailError> {
+    let payload: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT content FROM opened_messages
+         WHERE account_id = ? AND folder = ? AND uid_validity = ? AND uid = ?",
+            params![id, cache_folder(folder), key.uid_validity, key.uid],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| MailError::Storage)?;
+    // Cached entries can be refetched when their encoded format changes.
+    Ok(payload.and_then(|bytes| serde_json::from_slice(&bytes).ok()))
+}
+
+pub(super) fn save_message(
+    db: &mut Connection,
+    id: AccountId,
+    folder: &str,
+    key: MessageKey,
+    payload: &[u8],
+) -> Result<(), MailError> {
+    let transaction = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| MailError::Storage)?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO opened_messages (account_id, folder, uid_validity, uid, content)
+         VALUES (?, ?, ?, ?, ?)",
+        params![id, cache_folder(folder), key.uid_validity, key.uid, payload],
+    ).map_err(|_| MailError::Storage)?;
+    transaction.execute(
+        "DELETE FROM opened_messages WHERE rowid IN (
+             SELECT rowid FROM opened_messages WHERE account_id = ? ORDER BY rowid DESC LIMIT -1 OFFSET ?
+         )",
+        params![id, CACHED_MESSAGES_PER_ACCOUNT],
+    ).map_err(|_| MailError::Storage)?;
+    transaction.commit().map_err(|_| MailError::Storage)
+}
+
+pub(super) fn remove_cached_message(
+    db: &Connection,
+    id: AccountId,
+    folder: &str,
+    key: MessageKey,
+) -> Result<(), MailError> {
+    db.execute(
+        "DELETE FROM opened_messages
+         WHERE account_id = ? AND folder = ? AND uid_validity = ? AND uid = ?",
+        params![id, cache_folder(folder), key.uid_validity, key.uid],
     )
     .map(|_| ())
     .map_err(|_| MailError::Storage)
@@ -496,6 +609,120 @@ mod tests {
     use super::*;
 
     #[test]
+    fn persists_opened_content_across_restarts_and_scopes_it_to_the_mailbox_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mail.sqlite3");
+        let mut db = open(&path).unwrap();
+        db.execute_batch("DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
+            .unwrap();
+        let account = |email: &str| Account {
+            email: email.into(),
+            host: "imap.example.test".into(),
+            port: 993,
+            username: None,
+            start_tls: false,
+        };
+        let first = insert_account(&db, &account("first@example.test"), None).unwrap();
+        let second = insert_account(&db, &account("second@example.test"), None).unwrap();
+        migrate(&mut db).unwrap();
+        let key = MessageKey {
+            uid_validity: 8,
+            uid: 7,
+        };
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "body": "Example body", "bodyTruncated": true, "html": { "content": "<p>Example body</p>" },
+            "attachments": [{ "part": [2], "name": "notes.txt", "isImage": false, "canOpen": true }],
+            "summary": { "points": [{ "kind": "keyPoint", "text": "Example body" }] },
+            "reply": { "to": ["sender@example.test"], "cc": [], "thread": null }
+        })).unwrap();
+        save_message(&mut db, first, "inbox", key, &payload).unwrap();
+        save_message(&mut db, first, "Sent", key, &payload).unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        let cached = cached_message(&db, first, "INBOX", key).unwrap().unwrap();
+        let opened = super::super::OpenedMessage {
+            content: cached,
+            seen: true,
+            seen_error: None,
+        };
+        let mut expected: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        expected["seen"] = true.into();
+        expected["seenError"] = serde_json::Value::Null;
+        assert_eq!(serde_json::to_value(opened).unwrap(), expected);
+        assert!(cached_message(&db, second, "INBOX", key).unwrap().is_none());
+        assert!(cached_message(&db, first, "sent", key).unwrap().is_none());
+        let changed = MessageKey {
+            uid_validity: 9,
+            ..key
+        };
+        assert!(cached_message(&db, first, "INBOX", changed)
+            .unwrap()
+            .is_none());
+
+        apply_cached_action(&db, first, "INBOX", key, MessageAction::Unread).unwrap();
+        assert!(cached_message(&db, first, "INBOX", key).unwrap().is_some());
+        apply_cached_action(&db, first, "Sent", key, MessageAction::Trash).unwrap();
+        assert!(cached_message(&db, first, "Sent", key).unwrap().is_none());
+        assert!(cached_message(&db, first, "INBOX", key).unwrap().is_some());
+        db.execute("DELETE FROM account WHERE id = ?", [first])
+            .unwrap();
+        assert!(cached_message(&db, first, "INBOX", key).unwrap().is_none());
+    }
+
+    #[test]
+    fn bounds_the_opened_message_cache_and_ignores_unreadable_entries() {
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        let id = insert_account(
+            &db,
+            &Account {
+                email: "fixture@example.test".into(),
+                host: "imap.example.test".into(),
+                port: 993,
+                username: None,
+                start_tls: false,
+            },
+            None,
+        )
+        .unwrap();
+        let content = serde_json::to_vec(&MessageContent {
+            body: Some("Body".into()),
+            body_truncated: false,
+            html: None,
+            attachments: vec![],
+            summary: None,
+            reply: None,
+        })
+        .unwrap();
+        for uid in 1..=CACHED_MESSAGES_PER_ACCOUNT + 1 {
+            save_message(
+                &mut db,
+                id,
+                "INBOX",
+                MessageKey {
+                    uid_validity: 1,
+                    uid,
+                },
+                &content,
+            )
+            .unwrap();
+        }
+        let oldest = MessageKey {
+            uid_validity: 1,
+            uid: 1,
+        };
+        let newest = MessageKey {
+            uid_validity: 1,
+            uid: CACHED_MESSAGES_PER_ACCOUNT + 1,
+        };
+        assert!(cached_message(&db, id, "INBOX", oldest).unwrap().is_none());
+        assert!(cached_message(&db, id, "INBOX", newest).unwrap().is_some());
+        save_message(&mut db, id, "INBOX", newest, b"invalid cache data").unwrap();
+        assert!(cached_message(&db, id, "INBOX", newest).unwrap().is_none());
+    }
+
+    #[test]
     fn migrates_the_old_current_account_and_its_cached_inbox() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(
@@ -578,9 +805,15 @@ mod tests {
         let second = connect(&mut db, "second@example.test", "second password");
         assert_ne!(first, second);
         assert_eq!(snapshot(&mut db).unwrap().unwrap().account_id, second);
-        apply_cached_action(&db, first, key, MessageAction::Star).unwrap();
+        assert_eq!(active_unread(&db).unwrap(), None);
+        remember_unread(&db, first, 78).unwrap();
+        assert_eq!(active_unread(&db).unwrap(), None);
+        remember_unread(&db, second, 0).unwrap();
+        assert_eq!(active_unread(&db).unwrap(), Some(0));
+        apply_cached_action(&db, first, "INBOX", key, MessageAction::Star).unwrap();
         assert!(!snapshot(&mut db).unwrap().unwrap().headers[0].starred);
         assert!(select_account(&mut db, first).unwrap().headers[0].starred);
+        assert_eq!(active_unread(&db).unwrap(), Some(78));
         assert!(matches!(
             select_account(&mut db, 999),
             Err(MailError::NoAccount)
@@ -588,6 +821,7 @@ mod tests {
         drop(db);
         let mut db = open(&path).unwrap();
         assert_eq!(snapshot(&mut db).unwrap().unwrap().account_id, first);
+        assert_eq!(active_unread(&db).unwrap(), Some(78));
         assert_eq!(
             outgoing_connection(&db, directory.path(), second)
                 .unwrap()

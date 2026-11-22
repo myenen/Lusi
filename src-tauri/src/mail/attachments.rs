@@ -1,7 +1,7 @@
 use super::MailError;
 use async_imap::imap_proto::{BodyContentCommon, BodyParams, BodyStructure, ContentEncoding};
 use mail_parser::{Encoding, MessageParser};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -19,7 +19,7 @@ pub(super) fn wire_limit(encoding: Encoding) -> usize {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Attachment {
     pub part: Vec<u32>,

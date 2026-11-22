@@ -34,6 +34,11 @@ export interface ImapHeader {
   hasAttachments?: boolean;
 }
 
+export interface OlderMessages {
+  headers: ImapHeader[];
+  nextBefore: MessageKey | null;
+}
+
 export interface ConnectedInbox {
   accountId: number;
   email: string;
@@ -111,8 +116,10 @@ export const connectGmailAccount = (email: string, reconnectAccountId?: number) 
 export const refreshConnectedInbox = (accountId: number) => invoke<ConnectedInbox>('refresh_connected_inbox', { accountId });
 export const listConnectedFolders = (accountId: number) => invoke<MailFolder[]>('list_connected_folders', { accountId });
 export const readConnectedFolder = (accountId: number, folder: string) => invoke<ImapHeader[]>('read_connected_folder', { accountId, folder });
-export const readConnectedMessage = (accountId: number, folder: string, key: MessageKey) =>
-  invoke<OpenedMessage>('read_connected_message', { accountId, folder, key });
+export const readOlderConnectedMessages = (accountId: number, folder: string, before: MessageKey) =>
+  invoke<OlderMessages>('read_older_connected_messages', { accountId, folder, before });
+export const readConnectedMessage = (accountId: number, folder: string, key: MessageKey, unread: boolean) =>
+  invoke<OpenedMessage>('read_connected_message', { accountId, folder, key, unread });
 export const downloadConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
   invoke<AttachmentDownloadResult>('download_connected_attachment', { accountId, folder, key, part });
 export const openConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
@@ -120,8 +127,22 @@ export const openConnectedAttachment = (accountId: number, folder: string, key: 
 export const sendConnectedMessage = (accountId: number, message: OutgoingMessage) => invoke<void>('send_connected_message', { accountId, message });
 export const updateConnectedMessage = (accountId: number, folder: string, key: MessageKey, action: MessageAction) =>
   invoke<void>('update_connected_message', { accountId, folder, key, action });
-export const updateConnectedMessages = (accountId: number, folder: string, keys: MessageKey[], action: MessageAction) =>
-  invoke<{ updated: MessageKey[]; error: string | null }>('update_connected_messages', { accountId, folder, keys, action });
+const actionBatchSize = 50;
+
+export async function updateConnectedMessages(accountId: number, folder: string, keys: MessageKey[], action: MessageAction) {
+  const updated: MessageKey[] = [];
+  for (let start = 0; start < keys.length; start += actionBatchSize) {
+    const batch = keys.slice(start, start + actionBatchSize);
+    try {
+      const result = await invoke<{ updated: MessageKey[]; error: string | null }>('update_connected_messages', { accountId, folder, keys: batch, action });
+      updated.push(...result.updated);
+      if (result.error || result.updated.length !== batch.length) return { updated, error: result.error ?? 'actionFailed' };
+    } catch (error) {
+      return { updated, error: error ?? 'unknown' };
+    }
+  }
+  return { updated, error: null };
+}
 
 export function imapErrorMessage(error: unknown, messages: Record<string, string> & { unknown: string }) {
   return typeof error === 'string' && Object.hasOwn(messages, error) ? messages[error] : messages.unknown;

@@ -1,4 +1,16 @@
 const rules = `
+html {
+  --mail-scroll-thumb: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mail-scroll-thumb) transparent;
+}
+html:is(:hover, :focus-visible, :has(:focus-visible)) {
+  --mail-scroll-thumb: color-mix(in srgb, var(--mail-muted) 58%, transparent);
+}
+html::-webkit-scrollbar { width: 7px; height: 7px; }
+html::-webkit-scrollbar-track { background: transparent; }
+html::-webkit-scrollbar-thumb { background: var(--mail-scroll-thumb); border-radius: 999px; }
+
 .mail-theme {
   margin: 0;
   background: var(--mail-surface);

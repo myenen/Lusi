@@ -2,6 +2,7 @@ import { Archive, FilePenLine, Folder, Inbox, Mail, PanelLeftClose, PanelLeftOpe
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
+import { ScrollArea } from '../../components/ui/ScrollArea';
 import type { FolderKind, MailFolder } from '../accounts/imap-api';
 import { folderDisplayName } from './connected-mail';
 
@@ -48,7 +49,7 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
     <aside id="sidebar" className="sidebar glass-panel" data-open={open} data-collapsed={collapsed} aria-label={labels.sidebar} role={open ? 'dialog' : undefined} aria-modal={open || undefined}
       onKeyDown={(event) => {
         if (!open || event.key !== 'Tab') return;
-        const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button, input, select')].filter((control) => (
+        const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button, input, select, [tabindex="0"]')].filter((control) => (
           control.tabIndex >= 0 && !control.matches(':disabled, input[type="radio"]:not(:checked)')
           && !control.closest('[inert]') && control.getClientRects().length > 0
         ));
@@ -57,7 +58,7 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
         if (event.shiftKey && event.target === first) { event.preventDefault(); last?.focus(); }
         if (!event.shiftKey && event.target === last) { event.preventDefault(); first?.focus(); }
       }}>
-      <div className="sidebar-scroll">
+      <ScrollArea className="sidebar-scroll" contentClassName="sidebar-scroll-content" label={labels.sidebar}>
         <div className="brand">
           <span className="brand-icon" aria-hidden="true" /><span className="sidebar-copy">Lusi</span>
           <IconButton
@@ -83,7 +84,7 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
           </section>}
         </nav>
         {status}
-      </div>
+      </ScrollArea>
       <div className="sidebar-bottom">
         {account}
         {appearance}

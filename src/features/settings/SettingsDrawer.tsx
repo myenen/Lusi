@@ -6,6 +6,7 @@ import { ThemePresetSelect } from '../../app/ThemePresetSelect';
 import { ThemeSelect } from '../../app/ThemeSelect';
 import type { Preferences } from '../../app/ui-preferences';
 import { IconButton } from '../../components/ui/Controls';
+import { ScrollArea } from '../../components/ui/ScrollArea';
 import { AccountSetup } from '../accounts/AccountSetup';
 import { connectGmailAccount, imapErrorMessage, type ConnectedAccount, type ConnectedInbox } from '../accounts/imap-api';
 
@@ -70,7 +71,7 @@ export function SettingsDrawer({ accountId, connectedEmail, accounts, accountsLo
           <h2 id="settings-title">{labels.settings}</h2>
           <IconButton ref={closeButton} label={labels.closeSettings} icon={X} onClick={close} disabled={Boolean(accountOperation)} />
         </header>
-        <div className="settings-body">
+        <ScrollArea className="settings-scroll" contentClassName="settings-body" label={labels.settings}>
           <section className="settings-section" aria-labelledby="account-center-title">
             <header className="settings-section-heading">
               <h3 id="account-center-title"><UserRound size={17} aria-hidden="true" />{labels.accountCenter}</h3>
@@ -115,7 +116,7 @@ export function SettingsDrawer({ accountId, connectedEmail, accounts, accountsLo
               <LanguageSelect value={preferences.language} onChange={(language) => onUpdate({ language })} disabled={false} />
             </div>
           </section>
-        </div>
+        </ScrollArea>
       </div>
     </dialog>
     {addingAccount && <AccountSetup desktop onConnected={onAccountChanged} onClose={() => {

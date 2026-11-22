@@ -1,6 +1,6 @@
 use super::{
     attachments, validate_folder, Account, BatchActionResult, FolderKind, MailAuth, MailError,
-    MailFolder, MailHeader, MessageAction, MessageKey, OpenedMessage,
+    MailFolder, MailHeader, MessageAction, MessageKey, OlderMessages, OpenedMessage,
 };
 use async_imap::{
     imap_proto::SectionPath,
@@ -25,8 +25,43 @@ const BODY_QUERY: &str = "(UID FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[]<0.104
 const BODY_LIMIT: usize = 1_048_576;
 pub(super) const WINDOW_SIZE: u32 = 50;
 
-pub async fn inbox(account: &Account, auth: &MailAuth) -> Result<Vec<MailHeader>, MailError> {
-    folder(account, auth, "INBOX").await
+pub async fn inbox(
+    account: &Account,
+    auth: &MailAuth,
+) -> Result<(Vec<MailHeader>, Option<u32>), MailError> {
+    let (mut session, headers) = timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        let headers = fetch_folder(&mut session, "INBOX").await?;
+        Ok::<_, MailError>((session, headers))
+    })
+    .await
+    .map_err(|_| MailError::Timeout)??;
+    let unread = inbox_unread(&mut session, Some("INBOX")).await;
+    Ok((headers, unread))
+}
+
+pub(super) async fn fetch_inbox_unread(account: &Account, auth: &MailAuth) -> Option<u32> {
+    let mut session = timeout(REQUEST_TIMEOUT, authenticate(account, auth))
+        .await
+        .ok()?
+        .ok()?;
+    inbox_unread(&mut session, None).await
+}
+
+async fn inbox_unread<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    selected: Option<&str>,
+) -> Option<u32> {
+    timeout(Duration::from_secs(2), async {
+        if selected.is_some_and(|folder| folder.eq_ignore_ascii_case("INBOX")) {
+            // UNSELECT never expunges mail. Older servers can still answer STATUS directly.
+            let _ = session.run_command_and_check_ok("UNSELECT").await;
+        }
+        session.status("INBOX", "(UNSEEN)").await.ok()?.unseen
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 pub async fn folder(
@@ -42,17 +77,38 @@ pub async fn folder(
     .map_err(|_| MailError::Timeout)?
 }
 
+pub(super) async fn older_messages(
+    account: &Account,
+    auth: &MailAuth,
+    folder: &str,
+    before: MessageKey,
+) -> Result<OlderMessages, MailError> {
+    timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        fetch_older_messages(&mut session, folder, before).await
+    })
+    .await
+    .map_err(|_| MailError::Timeout)?
+}
+
 pub async fn message(
     account: &Account,
     auth: &MailAuth,
     folder: &str,
     key: MessageKey,
-) -> Result<OpenedMessage, MailError> {
+) -> Result<(OpenedMessage, Option<u32>), MailError> {
     let deadline = Instant::now() + REQUEST_TIMEOUT;
     let mut session = timeout_at(deadline, authenticate(account, auth))
         .await
         .map_err(|_| MailError::Timeout)??;
-    open_in_session(&mut session, folder, key, &account.email, deadline).await
+    let (message, marked_read) =
+        open_in_session(&mut session, folder, key, &account.email, deadline).await?;
+    let unread = if marked_read {
+        inbox_unread(&mut session, Some(folder)).await
+    } else {
+        None
+    };
+    Ok((message, unread))
 }
 
 pub(super) async fn download_attachment(
@@ -151,11 +207,12 @@ async fn open_in_session<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::De
     key: MessageKey,
     email: &str,
     deadline: Instant,
-) -> Result<OpenedMessage, MailError> {
+) -> Result<(OpenedMessage, bool), MailError> {
     let mut message = timeout_at(deadline, fetch_message(session, folder, key, email))
         .await
         .map_err(|_| MailError::Timeout)??;
-    if !message.seen {
+    let was_unread = !message.seen;
+    if was_unread {
         match timeout(
             Duration::from_secs(4),
             change_message(session, folder, key, MessageAction::Read, None),
@@ -167,7 +224,8 @@ async fn open_in_session<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::De
             Err(_) => message.seen_error = Some(MailError::Timeout),
         }
     }
-    Ok(message)
+    let marked_read = was_unread && message.seen;
+    Ok((message, marked_read))
 }
 
 pub(super) async fn apply_action(
@@ -176,13 +234,26 @@ pub(super) async fn apply_action(
     folder: &str,
     key: MessageKey,
     action: MessageAction,
-) -> Result<(), MailError> {
-    timeout(REQUEST_TIMEOUT, async {
+    action_timeout: Option<Duration>,
+) -> Result<Option<u32>, MailError> {
+    let mut session = timeout(action_timeout.unwrap_or(REQUEST_TIMEOUT), async {
         let mut session = authenticate(account, auth).await?;
-        apply_message_action(&mut session, folder, key, action).await
+        apply_message_action(&mut session, folder, key, action).await?;
+        Ok::<_, MailError>(session)
     })
     .await
-    .map_err(|_| MailError::ActionFailed)?
+    .map_err(|_| {
+        if action_timeout.is_some() {
+            MailError::Timeout
+        } else {
+            MailError::ActionFailed
+        }
+    })??;
+    Ok(if action.affects_unread_count() {
+        inbox_unread(&mut session, Some(folder)).await
+    } else {
+        None
+    })
 }
 
 async fn apply_message_action<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -201,7 +272,7 @@ pub(super) async fn apply_batch(
     folder: &str,
     keys: &[MessageKey],
     action: MessageAction,
-) -> Result<BatchActionResult, MailError> {
+) -> Result<(BatchActionResult, Option<u32>), MailError> {
     let first = keys.first().ok_or(MailError::InvalidSettings)?;
     let deadline = Instant::now() + REQUEST_TIMEOUT * 2;
     let (mut session, destination) = timeout_at(deadline, async {
@@ -212,7 +283,14 @@ pub(super) async fn apply_batch(
     })
     .await
     .map_err(|_| MailError::ActionFailed)??;
-    Ok(change_selected_batch(&mut session, keys, action, destination.as_deref(), deadline).await)
+    let result =
+        change_selected_batch(&mut session, keys, action, destination.as_deref(), deadline).await;
+    let unread = if !result.updated.is_empty() && action.affects_unread_count() {
+        inbox_unread(&mut session, Some(folder)).await
+    } else {
+        None
+    };
+    Ok((result, unread))
 }
 
 async fn change_selected_batch<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -551,13 +629,7 @@ async fn fetch_folder<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
     session: &mut Session<T>,
     folder: &str,
 ) -> Result<Vec<MailHeader>, MailError> {
-    let folder_error = || {
-        if folder.eq_ignore_ascii_case("INBOX") {
-            MailError::Inbox
-        } else {
-            MailError::Folder
-        }
-    };
+    let folder_error = || list_error(folder);
     let mailbox = session.examine(folder).await.map_err(|_| folder_error())?;
     let uid_validity = mailbox
         .uid_validity
@@ -566,19 +638,126 @@ async fn fetch_folder<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
     if mailbox.exists == 0 {
         return Ok(Vec::new());
     }
-    let range = format!(
-        "{}:{}",
-        mailbox.exists.saturating_sub(WINDOW_SIZE - 1).max(1),
-        mailbox.exists
-    );
+    let start = mailbox.exists.saturating_sub(WINDOW_SIZE - 1).max(1);
+    fetch_headers(session, folder, uid_validity, start, mailbox.exists, None).await
+}
+
+async fn fetch_older_messages<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    before: MessageKey,
+) -> Result<OlderMessages, MailError> {
+    let mailbox = session
+        .examine(folder)
+        .await
+        .map_err(|_| list_error(folder))?;
+    if mailbox.uid_validity != Some(before.uid_validity) {
+        return Err(MailError::MailboxChanged);
+    }
+    let end = if mailbox.exists == 0 || before.uid == 1 {
+        0
+    } else {
+        older_sequence(session, folder, before.uid, mailbox.exists).await?
+    };
+    if end == 0 {
+        return Ok(OlderMessages {
+            headers: Vec::new(),
+            next_before: None,
+        });
+    }
+    let start = end.saturating_sub(WINDOW_SIZE - 1).max(1);
+    let headers = fetch_headers(
+        session,
+        folder,
+        before.uid_validity,
+        start,
+        end,
+        Some(before.uid),
+    )
+    .await?;
+    let next_before = if start > 1 {
+        Some(headers.last().ok_or_else(|| list_error(folder))?.key)
+    } else {
+        None
+    };
+    Ok(OlderMessages {
+        headers,
+        next_before,
+    })
+}
+
+async fn older_sequence<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    before_uid: u32,
+    exists: u32,
+) -> Result<u32, MailError> {
+    {
+        let mut records = session
+            .uid_fetch(before_uid.to_string(), "(UID)")
+            .await
+            .map_err(|_| list_error(folder))?;
+        let mut sequence = None;
+        while let Some(record) = records.try_next().await.map_err(|_| list_error(folder))? {
+            if record.uid == Some(before_uid) {
+                sequence = Some(record.message);
+            }
+        }
+        if let Some(sequence) = sequence {
+            return Ok(sequence.saturating_sub(1));
+        }
+    }
+    // A deleted anchor has no sequence number. UIDs still increase with sequence number.
+    let (mut low, mut high) = (0, exists);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let mut records = session
+            .fetch(mid.to_string(), "(UID)")
+            .await
+            .map_err(|_| list_error(folder))?;
+        let mut uid = None;
+        while let Some(record) = records.try_next().await.map_err(|_| list_error(folder))? {
+            if record.message == mid {
+                uid = record.uid;
+            }
+        }
+        if uid.ok_or_else(|| list_error(folder))? < before_uid {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    Ok(low)
+}
+
+fn list_error(folder: &str) -> MailError {
+    if folder.eq_ignore_ascii_case("INBOX") {
+        MailError::Inbox
+    } else {
+        MailError::Folder
+    }
+}
+
+async fn fetch_headers<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    uid_validity: u32,
+    start: u32,
+    end: u32,
+    before_uid: Option<u32>,
+) -> Result<Vec<MailHeader>, MailError> {
+    let folder_error = || list_error(folder);
     let mut fetches = session
-        .fetch(range, HEADER_QUERY)
+        .fetch(format!("{start}:{end}"), HEADER_QUERY)
         .await
         .map_err(|_| folder_error())?;
     let mut headers = Vec::new();
     let parser = MessageParser::default();
     while let Some(fetch) = fetches.try_next().await.map_err(|_| folder_error())? {
-        let Some(uid) = fetch.uid.filter(|uid| *uid > 0) else {
+        let Some(uid) = fetch
+            .uid
+            .filter(|uid| *uid > 0 && before_uid.is_none_or(|before| *uid < before))
+        else {
             continue;
         };
         let parsed = fetch
@@ -660,12 +839,14 @@ async fn fetch_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
             .unwrap_or_default();
         let summary = super::summary::MessageSummarizer::summarize(body.as_deref(), html.as_ref());
         result = Ok(OpenedMessage {
-            body,
-            body_truncated,
-            html,
-            attachments,
-            summary,
-            reply: super::reply::details(bytes, email),
+            content: super::MessageContent {
+                body,
+                body_truncated,
+                html,
+                attachments,
+                summary,
+                reply: super::reply::details(bytes, email),
+            },
             seen: fetch.flags().any(|flag| flag == Flag::Seen),
             seen_error: None,
         });
@@ -745,6 +926,97 @@ mod tests {
     }
 
     #[test]
+    fn pages_by_uid_even_after_the_anchor_is_deleted() {
+        tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(5), async {
+                let (client, server) = duplex(16_384);
+                let fixture = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    exchange(
+                        &mut server,
+                        r#"LOGIN "mail@example.test" "fixture-only""#,
+                        "",
+                    )
+                    .await;
+                    exchange(
+                        &mut server,
+                        r#"EXAMINE "INBOX""#,
+                        "* 125 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n",
+                    )
+                    .await;
+                    exchange(
+                        &mut server,
+                        "UID FETCH 240 (UID)",
+                        "* 76 FETCH (UID 240)\r\n",
+                    )
+                    .await;
+                    let rows: String = (26..=75)
+                        .map(|seq| format!("* {seq} FETCH (UID {} FLAGS ())\r\n", seq * 3))
+                        .collect();
+                    exchange(&mut server, &format!("FETCH 26:75 {HEADER_QUERY}"), &rows).await;
+                    exchange(
+                        &mut server,
+                        r#"EXAMINE "INBOX""#,
+                        "* 3 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n",
+                    )
+                    .await;
+                    exchange(&mut server, "UID FETCH 78 (UID)", "").await;
+                    exchange(&mut server, "FETCH 2 (UID)", "* 2 FETCH (UID 75)\r\n").await;
+                    exchange(&mut server, "FETCH 3 (UID)", "* 3 FETCH (UID 240)\r\n").await;
+                    exchange(
+                        &mut server,
+                        &format!("FETCH 1:2 {HEADER_QUERY}"),
+                        "* 1 FETCH (UID 8 FLAGS ())\r\n* 2 FETCH (UID 75 FLAGS ())\r\n",
+                    )
+                    .await;
+                    exchange(
+                        &mut server,
+                        r#"EXAMINE "INBOX""#,
+                        "* 2 EXISTS\r\n* OK [UIDVALIDITY 21] changed\r\n",
+                    )
+                    .await;
+                });
+                let mut session = Client::new(client)
+                    .login("mail@example.test", "fixture-only")
+                    .await
+                    .unwrap();
+                let page = fetch_older_messages(
+                    &mut session,
+                    "INBOX",
+                    MessageKey {
+                        uid_validity: 20,
+                        uid: 240,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(page.headers.len(), WINDOW_SIZE as usize);
+                assert_eq!(page.headers[0].key.uid, 225);
+                let next = page.next_before.unwrap();
+                assert_eq!(next.uid, 78);
+                let last = fetch_older_messages(&mut session, "INBOX", next)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    last.headers
+                        .iter()
+                        .map(|header| header.key.uid)
+                        .collect::<Vec<_>>(),
+                    [75, 8]
+                );
+                assert!(last.next_before.is_none());
+                assert!(matches!(
+                    fetch_older_messages(&mut session, "INBOX", next).await,
+                    Err(MailError::MailboxChanged)
+                ));
+                fixture.await.unwrap();
+            })
+            .await
+            .unwrap();
+        });
+    }
+
+    #[test]
     fn lists_and_downloads_attachments_by_uid_and_part_without_fetching_inline_images() {
         tauri::async_runtime::block_on(async {
             timeout(Duration::from_secs(5), async {
@@ -779,10 +1051,10 @@ mod tests {
                 let key = MessageKey { uid_validity: 20, uid: 17 };
                 assert!(fetch_folder(&mut session, "INBOX").await.unwrap()[0].has_attachments);
                 let message = fetch_message(&mut session, "INBOX", key, "mail@example.test").await.unwrap();
-                assert!(message.body_truncated);
-                assert_eq!(message.attachments.len(), 1);
-                assert_eq!(message.attachments[0].part, [2]);
-                assert_eq!(serde_json::to_value(&message.attachments[0]).unwrap()["name"], "price.pdf");
+                assert!(message.content.body_truncated);
+                assert_eq!(message.content.attachments.len(), 1);
+                assert_eq!(message.content.attachments[0].part, [2]);
+                assert_eq!(serde_json::to_value(&message.content.attachments[0]).unwrap()["name"], "price.pdf");
                 assert_eq!(fetch_attachment(&mut session, "INBOX", key, vec![1, 2]).await, Err(MailError::AttachmentUnavailable));
                 assert_eq!(fetch_attachment(&mut session, "INBOX", key, vec![2]).await.unwrap().1, b"PDF\0");
                 fixture.await.unwrap();
@@ -869,12 +1141,19 @@ mod tests {
                     exchange(&mut server, r#"SELECT "INBOX""#, selected).await;
                     exchange(&mut server, "UID FETCH 17 (UID)", "* 1 FETCH (UID 17)\r\n").await;
                     exchange(&mut server, "UID STORE 17 +FLAGS.SILENT (\\Seen)", "").await;
+                    exchange(&mut server, "UNSELECT", "").await;
+                    exchange(
+                        &mut server,
+                        r#"STATUS "INBOX" (UNSEEN)"#,
+                        "* STATUS INBOX (UNSEEN 78)\r\n",
+                    )
+                    .await;
                 });
                 let mut session = Client::new(client)
                     .login("mail@example.test", "fixture-only")
                     .await
                     .unwrap();
-                let opened = open_in_session(
+                let (opened, marked_read) = open_in_session(
                     &mut session,
                     "INBOX",
                     MessageKey {
@@ -886,9 +1165,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                assert_eq!(opened.body.unwrap().trim(), "Example body.");
+                assert_eq!(opened.content.body.unwrap().trim(), "Example body.");
                 assert!(opened.seen);
                 assert_eq!(opened.seen_error, None);
+                assert!(marked_read);
+                assert_eq!(inbox_unread(&mut session, Some("INBOX")).await, Some(78));
                 fixture.await.unwrap();
             })
             .await
@@ -1074,7 +1355,7 @@ mod tests {
             assert!(!headers[0].unread);
             let key = headers[0].key;
             assert_eq!(key, MessageKey { uid_validity: 20, uid: 171 });
-            assert_eq!(fetch_message(&mut session, "Parent/Sent", key, "mail@example.test").await.unwrap().body.unwrap().trim(), "Example body.");
+            assert_eq!(fetch_message(&mut session, "Parent/Sent", key, "mail@example.test").await.unwrap().content.body.unwrap().trim(), "Example body.");
             assert_eq!(fetch_message(&mut session, "Parent/Sent", MessageKey { uid_validity: 19, ..key }, "mail@example.test").await, Err(MailError::MailboxChanged));
             fixture.await.unwrap();
         }).await.unwrap() });

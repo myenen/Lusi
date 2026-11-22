@@ -2,7 +2,7 @@ use super::html::HtmlBody;
 use ammonia::Builder;
 use mail_parser::decoders::html::html_to_text;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
@@ -39,18 +39,18 @@ static GREETING_RE: LazyLock<Regex> =
 static FOOTER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(FOOTER).expect("footer patterns are valid"));
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct MessageSummary {
     points: Vec<SummaryPoint>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SummaryPoint {
     kind: PointKind,
     text: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum PointKind {
     KeyPoint,

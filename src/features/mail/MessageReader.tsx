@@ -2,6 +2,7 @@ import { ArrowLeft, Forward, Mail, Printer, Reply, ReplyAll } from 'lucide-react
 import { useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton, Toolbar } from '../../components/ui/Controls';
+import { ScrollArea } from '../../components/ui/ScrollArea';
 import type { MessageAction, OpenedMessage } from '../accounts/imap-api';
 import type { ResponseMode } from './Composer';
 import { MessageActions, type MessageActionAvailability } from './MessageActions';
@@ -44,7 +45,7 @@ export function MessageReader({ message, opened, body, headingRef, inert, onBack
       </header>
       {actionError && <p className="account-setup-error reader-action-error" role="alert">{actionError}</p>}
       {message ? (
-        <div className="reader-scroll" key={message.id}>
+        <ScrollArea className="reader-scroll" label={labels.reader} key={message.id}>
           <article className="letter">
             <div className="letter-header">
               <div className="letter-title"><h2 ref={headingRef} tabIndex={-1}>{message.subject}</h2></div>
@@ -59,7 +60,7 @@ export function MessageReader({ message, opened, body, headingRef, inert, onBack
             </div>
             <div className="letter-body">{body}</div>
           </article>
-        </div>
+        </ScrollArea>
       ) : <div className="reader-empty"><Mail size={32} aria-hidden="true" /><p>{labels.noSelection}</p></div>}
       {message && <footer className="reader-footer">
         <Toolbar label={labels.respond}>

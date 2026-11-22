@@ -5,10 +5,11 @@ import { HtmlMessageFrame } from './HtmlMessageFrame';
 import { MessageSummary } from './MessageSummary';
 import { MessageAttachments } from './MessageAttachments';
 
-export function ConnectedMessageBody({ accountId, folder, messageKey: { uidValidity, uid }, onSeen, onOpened, themeId, colorScheme }: {
+export function ConnectedMessageBody({ accountId, folder, messageKey: { uidValidity, uid }, unread, onSeen, onOpened, themeId, colorScheme }: {
   accountId: number;
   folder: string;
   messageKey: MessageKey;
+  unread: boolean;
   onSeen: (folder: string, key: MessageKey) => void;
   onOpened: (message: OpenedMessage) => void;
   themeId: string;
@@ -20,10 +21,11 @@ export function ConnectedMessageBody({ accountId, folder, messageKey: { uidValid
   const [showPlain, setShowPlain] = useState(false);
   const markSeen = useEffectEvent(onSeen);
   const recordOpened = useEffectEvent(onOpened);
+  const loadMessage = useEffectEvent((key: MessageKey) => readConnectedMessage(accountId, folder, key, unread));
 
   useEffect(() => {
     let active = true;
-    readConnectedMessage(accountId, folder, { uidValidity, uid }).then(
+    loadMessage({ uidValidity, uid }).then(
       (message) => {
         if (!active) return;
         setReading(message);

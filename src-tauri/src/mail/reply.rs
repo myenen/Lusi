@@ -4,7 +4,7 @@ use mail_parser::{AddressList, MessageParser};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ReplyDetails {
     to: Vec<String>,

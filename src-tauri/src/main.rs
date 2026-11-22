@@ -4,6 +4,7 @@ use tauri::Manager;
 
 mod mail;
 mod preferences;
+mod unread_badge;
 
 fn main() -> tauri::Result<()> {
     tauri::Builder::default()
@@ -11,6 +12,7 @@ fn main() -> tauri::Result<()> {
         .manage(mail::MailOperations::default())
         .manage(mail::GmailSession::default())
         .manage(mail::AttachmentPreviews::default())
+        .manage(unread_badge::UnreadBadge::default())
         .invoke_handler(tauri::generate_handler![
             preferences::load_ui_preferences,
             preferences::save_ui_preferences,
@@ -24,6 +26,7 @@ fn main() -> tauri::Result<()> {
             mail::refresh_connected_inbox,
             mail::list_connected_folders,
             mail::read_connected_folder,
+            mail::read_older_connected_messages,
             mail::read_connected_message,
             mail::download_connected_attachment,
             mail::open_connected_attachment,

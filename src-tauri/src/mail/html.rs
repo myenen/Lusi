@@ -2,13 +2,13 @@ use ammonia::{Builder, Url, UrlRelative};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use cssparser::{parse_important, Parser};
 use mail_parser::{MessageParser, MessageRef, PartKind};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::HashMap, sync::Mutex};
 
 const MAX_EMBEDDED_BYTES: usize = 512 * 1024;
 const MAX_EMBEDDED_MARKUP: usize = 1024 * 1024;
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct HtmlBody {
     content: String,
 }

@@ -10,6 +10,7 @@ mod smtp;
 mod storage;
 mod summary;
 
+use crate::unread_badge::UnreadBadge;
 use serde::{Deserialize, Serialize};
 use smtp::{OutgoingMessage, SmtpSettings};
 use std::path::{Path, PathBuf};
@@ -95,6 +96,13 @@ pub struct MailHeader {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OlderMessages {
+    headers: Vec<MailHeader>,
+    next_before: Option<MessageKey>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Inbox {
     account_id: AccountId,
     email: String,
@@ -115,14 +123,21 @@ pub struct ConnectedAccount {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenedMessage {
+    #[serde(flatten)]
+    content: MessageContent,
+    seen: bool,
+    seen_error: Option<MailError>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageContent {
     body: Option<String>,
     body_truncated: bool,
     html: Option<html::HtmlBody>,
     attachments: Vec<attachments::Attachment>,
     summary: Option<summary::MessageSummary>,
     reply: Option<reply::ReplyDetails>,
-    seen: bool,
-    seen_error: Option<MailError>,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,6 +156,12 @@ pub enum MessageAction {
     Archive,
     Trash,
     Restore,
+}
+
+impl MessageAction {
+    fn affects_unread_count(self) -> bool {
+        !matches!(self, Self::Star | Self::Unstar)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -291,6 +312,20 @@ async fn database<T: Send + 'static>(
     .map_err(|_| MailError::Storage)?
 }
 
+async fn update_unread_badge(app: &AppHandle, count: Option<(AccountId, u32)>) {
+    let handle = app.clone();
+    let _ = database(app, move |db, _| {
+        if let Some((account, unread)) = count {
+            storage::remember_unread(db, account, unread)?;
+        }
+        handle
+            .state::<UnreadBadge>()
+            .publish(&handle, || storage::active_unread(db));
+        Ok(())
+    })
+    .await;
+}
+
 #[tauri::command]
 pub fn check_imap_settings(account: Account, outgoing: SmtpSettings) -> Result<(), MailError> {
     let account = account.validated()?;
@@ -299,7 +334,9 @@ pub fn check_imap_settings(account: Account, outgoing: SmtpSettings) -> Result<(
 
 #[tauri::command]
 pub async fn load_connected_inbox(app: AppHandle) -> Result<Option<Inbox>, MailError> {
-    database(&app, |db, _| storage::snapshot(db)).await
+    let inbox = database(&app, |db, _| storage::snapshot(db)).await?;
+    update_unread_badge(&app, None).await;
+    Ok(inbox)
 }
 
 #[tauri::command]
@@ -312,7 +349,29 @@ pub async fn switch_connected_account(
     app: AppHandle,
     account_id: AccountId,
 ) -> Result<Inbox, MailError> {
-    database(&app, move |db, _| storage::select_account(db, account_id)).await
+    let inbox = database(&app, move |db, _| storage::select_account(db, account_id)).await?;
+    update_unread_badge(&app, None).await;
+    tauri::async_runtime::spawn(async move {
+        let operations = app.state::<MailOperations>();
+        let _operation = operations.0.lock().await;
+        if !matches!(
+            database(&app, move |db, _| storage::is_active(db, account_id)).await,
+            Ok(true)
+        ) {
+            return;
+        }
+        let unread = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (account, auth) = stored_connection(&app, account_id).await.ok()?;
+            imap::fetch_inbox_unread(&account, &auth).await
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(unread) = unread {
+            update_unread_badge(&app, Some((account_id, unread))).await;
+        }
+    });
+    Ok(inbox)
 }
 
 #[tauri::command]
@@ -339,7 +398,7 @@ pub async fn connect_imap_account(
         return Err(MailError::AlreadyConnected);
     }
     setup_diagnostics::record(format_args!("imap start"));
-    let headers = imap::inbox(&account, &auth).await.inspect_err(|error| {
+    let (headers, unread) = imap::inbox(&account, &auth).await.inspect_err(|error| {
         setup_diagnostics::record(format_args!("imap failed category={error:?}"));
     })?;
     setup_diagnostics::record(format_args!("imap ok"));
@@ -349,7 +408,9 @@ pub async fn connect_imap_account(
     })
     .await;
     setup_diagnostics::record(format_args!("storage ok={}", result.is_ok()));
-    result
+    let inbox = result?;
+    update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
+    Ok(inbox)
 }
 
 #[tauri::command]
@@ -375,7 +436,7 @@ pub async fn connect_gmail_account(
     let email = existing.map_or(authorized.email, |account| account.email);
     let (account, outgoing) = discovery::gmail_servers(&email);
     let auth = MailAuth::OAuth(authorized.access.value.clone());
-    let headers = imap::inbox(&account, &auth).await?;
+    let (headers, unread) = imap::inbox(&account, &auth).await?;
     smtp::verify(&outgoing, &account.email, &auth).await?;
     let refresh = authorized.refresh;
     let save = database(&app, move |db, _| {
@@ -383,9 +444,12 @@ pub async fn connect_gmail_account(
             gmail::store_refresh(email, &refresh)
         })
     });
-    app.state::<GmailSession>()
+    let inbox = app
+        .state::<GmailSession>()
         .save_authorized(email, authorized.access, save)
-        .await
+        .await?;
+    update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
+    Ok(inbox)
 }
 
 #[tauri::command]
@@ -395,12 +459,14 @@ pub async fn refresh_connected_inbox(
     account_id: AccountId,
 ) -> Result<Inbox, MailError> {
     let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id, None).await?;
-    let headers = imap::inbox(&account, &auth).await?;
-    database(&app, move |db, _| {
+    let (account, auth) = stored_connection(&app, account_id).await?;
+    let (headers, unread) = imap::inbox(&account, &auth).await?;
+    let inbox = database(&app, move |db, _| {
         storage::update_snapshot(db, account_id, headers)
     })
-    .await
+    .await?;
+    update_unread_badge(&app, unread.map(|count| (account_id, count))).await;
+    Ok(inbox)
 }
 
 #[tauri::command]
@@ -408,7 +474,7 @@ pub async fn list_connected_folders(
     app: AppHandle,
     account_id: AccountId,
 ) -> Result<Vec<MailFolder>, MailError> {
-    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    let (account, auth) = stored_connection(&app, account_id).await?;
     imap::folders(&account, &auth).await
 }
 
@@ -419,8 +485,23 @@ pub async fn read_connected_folder(
     folder: String,
 ) -> Result<Vec<MailHeader>, MailError> {
     validate_folder(&folder)?;
-    let (account, auth) = stored_connection(&app, account_id, None).await?;
+    let (account, auth) = stored_connection(&app, account_id).await?;
     imap::folder(&account, &auth, &folder).await
+}
+
+#[tauri::command]
+pub async fn read_older_connected_messages(
+    app: AppHandle,
+    account_id: AccountId,
+    folder: String,
+    before: MessageKey,
+) -> Result<OlderMessages, MailError> {
+    validate_folder(&folder)?;
+    if before.uid == 0 || before.uid_validity == 0 {
+        return Err(MailError::MessageMissing);
+    }
+    let (account, auth) = stored_connection(&app, account_id).await?;
+    imap::older_messages(&account, &auth, &folder, before).await
 }
 
 fn validate_folder(folder: &str) -> Result<(), MailError> {
@@ -433,15 +514,9 @@ fn validate_folder(folder: &str) -> Result<(), MailError> {
 async fn stored_connection(
     app: &AppHandle,
     account_id: AccountId,
-    inbox_key: Option<MessageKey>,
 ) -> Result<(Account, MailAuth), MailError> {
     let (account, password) = database(app, move |db, directory| {
         let account = storage::account(db, account_id)?.ok_or(MailError::NoAccount)?;
-        if let Some(key) = inbox_key {
-            if !storage::contains_message(db, account_id, key)? {
-                return Err(MailError::MessageMissing);
-            }
-        }
         if account.uses_gmail_oauth() {
             return Ok((discovery::gmail_servers(&account.email).0, None));
         }
@@ -464,19 +539,84 @@ pub async fn read_connected_message(
     account_id: AccountId,
     folder: String,
     key: MessageKey,
+    unread: bool,
 ) -> Result<OpenedMessage, MailError> {
     validate_folder(&folder)?;
+    if key.uid == 0 || key.uid_validity == 0 {
+        return Err(MailError::MessageMissing);
+    }
     let _operation = operations.0.lock().await;
     let is_inbox = folder.eq_ignore_ascii_case("INBOX");
-    let (account, auth) = stored_connection(&app, account_id, is_inbox.then_some(key)).await?;
-    let message = imap::message(&account, &auth, &folder, key).await?;
-    if is_inbox && (message.seen || !message.attachments.is_empty()) {
+    let cache_folder = folder.clone();
+    let cached = database(&app, move |db, _| {
+        storage::cached_message(db, account_id, &cache_folder, key)
+    })
+    .await
+    .ok()
+    .flatten();
+    let (message, unread_count) = if let Some(content) = cached {
+        let mut opened = OpenedMessage {
+            content,
+            seen: !unread,
+            seen_error: None,
+        };
+        let mut unread_count = None;
+        if unread {
+            let result = async {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+                let (account, auth) =
+                    tokio::time::timeout_at(deadline, stored_connection(&app, account_id))
+                        .await
+                        .map_err(|_| MailError::Timeout)??;
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                imap::apply_action(
+                    &account,
+                    &auth,
+                    &folder,
+                    key,
+                    MessageAction::Read,
+                    Some(remaining),
+                )
+                .await
+            }
+            .await;
+            match result {
+                Ok(count) => {
+                    opened.seen = true;
+                    unread_count = count;
+                }
+                Err(error @ (MailError::MailboxChanged | MailError::MessageMissing)) => {
+                    let _ = database(&app, move |db, _| {
+                        storage::remove_cached_message(db, account_id, &folder, key)
+                    })
+                    .await;
+                    return Err(error);
+                }
+                Err(error) => opened.seen_error = Some(error),
+            }
+        }
+        (opened, unread_count)
+    } else {
+        let (account, auth) = stored_connection(&app, account_id).await?;
+        let (opened, unread_count) = imap::message(&account, &auth, &folder, key).await?;
+        if let Ok(payload) = serde_json::to_vec(&opened.content) {
+            let _ = database(&app, move |db, _| {
+                storage::save_message(db, account_id, &folder, key, &payload)
+            })
+            .await;
+        }
+        (opened, unread_count)
+    };
+    if is_inbox && (message.seen || !message.content.attachments.is_empty()) {
         let seen = message.seen;
-        let has_attachments = !message.attachments.is_empty();
+        let has_attachments = !message.content.attachments.is_empty();
         let _ = database(&app, move |db, _| {
             storage::record_opened_message(db, account_id, key, seen, has_attachments)
         })
         .await;
+    }
+    if let Some(count) = unread_count {
+        update_unread_badge(&app, Some((account_id, count))).await;
     }
     Ok(message)
 }
@@ -535,7 +675,7 @@ async fn get_connected_attachment(
     {
         return Err(MailError::AttachmentUnavailable);
     }
-    let (account, auth) = stored_connection(app, account_id, None).await?;
+    let (account, auth) = stored_connection(app, account_id).await?;
     imap::download_attachment(&account, &auth, folder, key, part).await
 }
 
@@ -578,14 +718,17 @@ pub async fn update_connected_message(
         return Err(MailError::MessageMissing);
     }
     let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id, None).await?;
-    imap::apply_action(&account, &auth, &folder, key, action).await?;
-    if folder.eq_ignore_ascii_case("INBOX") {
-        // The server already accepted the action. A cache error must not prompt a retry.
-        let _ = database(&app, move |db, _| {
-            storage::apply_cached_action(db, account_id, key, action)
-        })
-        .await;
+    let (account, auth) = stored_connection(&app, account_id).await?;
+    let unread = imap::apply_action(&account, &auth, &folder, key, action, None).await?;
+    // The server already accepted the action. A cache error must not prompt a retry.
+    let _ = database(&app, move |db, _| {
+        let transaction = db.transaction().map_err(|_| MailError::Storage)?;
+        storage::apply_cached_action(&transaction, account_id, &folder, key, action)?;
+        transaction.commit().map_err(|_| MailError::Storage)
+    })
+    .await;
+    if let Some(unread) = unread {
+        update_unread_badge(&app, Some((account_id, unread))).await;
     }
     Ok(())
 }
@@ -611,19 +754,22 @@ pub async fn update_connected_messages(
         return Err(MailError::InvalidSettings);
     }
     let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id, None).await?;
-    let result = imap::apply_batch(&account, &auth, &folder, &keys, action).await?;
-    if folder.eq_ignore_ascii_case("INBOX") && !result.updated.is_empty() {
+    let (account, auth) = stored_connection(&app, account_id).await?;
+    let (result, unread) = imap::apply_batch(&account, &auth, &folder, &keys, action).await?;
+    if !result.updated.is_empty() {
         let updated = result.updated.clone();
         // A cache failure must not turn a confirmed server operation into a retry.
         let _ = database(&app, move |db, _| {
             let transaction = db.transaction().map_err(|_| MailError::Storage)?;
             for key in updated {
-                storage::apply_cached_action(&transaction, account_id, key, action)?;
+                storage::apply_cached_action(&transaction, account_id, &folder, key, action)?;
             }
             transaction.commit().map_err(|_| MailError::Storage)
         })
         .await;
+    }
+    if let Some(unread) = unread {
+        update_unread_badge(&app, Some((account_id, unread))).await;
     }
     Ok(result)
 }
