@@ -57,6 +57,8 @@ jobs:
       - name: Build installer
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
+          LUSI_GOOGLE_CLIENT_ID: ${{ vars.LUSI_GOOGLE_CLIENT_ID }}
+          LUSI_GOOGLE_CLIENT_SECRET: ${{ secrets.LUSI_GOOGLE_DESKTOP_CLIENT_PARAMETER }}
         run: npm run tauri -- build --ci --bundles ${{ matrix.bundle }} ${{ matrix.target }} -- --locked
       - name: Verify and launch the macOS bundle
         if: runner.os == 'macOS'
@@ -77,13 +79,20 @@ jobs:
           wait "$pid" || true
       - name: Install and launch on Windows
         if: runner.os == 'Windows'
+        env:
+          LUSI_GOOGLE_CLIENT_ID: ${{ vars.LUSI_GOOGLE_CLIENT_ID }}
+          LUSI_GOOGLE_CLIENT_SECRET: ${{ secrets.LUSI_GOOGLE_DESKTOP_CLIENT_PARAMETER }}
         run: |
           $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
           if ($installers.Count -ne 1) { throw 'Expected one Lusi installer' }
           $destination = Join-Path $env:RUNNER_TEMP 'Lusi-smoke'
           $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$destination" -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "Lusi installer exited with code $($setup.ExitCode)" }
-          $app = Start-Process -FilePath (Join-Path $destination 'lusi.exe') -PassThru
+          $executable = Join-Path $destination 'lusi.exe'
+          node -e 'const app = require("node:fs").readFileSync(process.argv[1]); for (const name of ["LUSI_GOOGLE_CLIENT_ID", "LUSI_GOOGLE_CLIENT_SECRET"]) { const value = process.env[name]; if (value && !app.includes(value)) throw new Error("Missing build configuration: " + name); }' $executable
+          if ($LASTEXITCODE -ne 0) { throw 'The installed app is missing its Google desktop client configuration' }
+          Remove-Item Env:LUSI_GOOGLE_CLIENT_ID, Env:LUSI_GOOGLE_CLIENT_SECRET -ErrorAction SilentlyContinue
+          $app = Start-Process -FilePath $executable -PassThru
           Start-Sleep -Seconds 5
           if ($app.HasExited) { throw "Lusi exited with code $($app.ExitCode)" }
           Stop-Process -Id $app.Id

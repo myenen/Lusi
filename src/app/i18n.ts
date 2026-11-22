@@ -84,7 +84,7 @@ const en = {
   imapErrors: {
     invalidSettings: 'Check the email address, IMAP hostname, TLS port, and password.',
     oauthRequired: 'This account requires provider sign-in. Personal Gmail accounts can use the Gmail setup flow.',
-    googleNotConfigured: 'Google sign-in is unavailable in this build. Lusi needs a Google desktop OAuth client.',
+    googleNotConfigured: 'Google sign-in is unavailable in this version of Lusi.',
     googleSignIn: 'Lusi could not complete Google sign-in. Try again.',
     googleBrowser: 'Lusi could not open your default browser.',
     googleConsent: 'Google mail access was declined or not granted. Try signing in again and allow mail access.',
@@ -309,7 +309,7 @@ const tr: typeof en = {
   imapErrors: {
     invalidSettings: 'E-posta adresini, IMAP sunucusunu, TLS portunu ve şifreyi kontrol et.',
     oauthRequired: 'Bu hesap, sağlayıcısı üzerinden oturum açmayı gerektiriyor. Kişisel Gmail hesapları için Gmail kurulumunu kullanabilirsin.',
-    googleNotConfigured: 'Bu derlemede Google ile giriş kullanılamıyor. Lusi için bir Google masaüstü OAuth istemcisi gerekli.',
+    googleNotConfigured: 'Lusi’nin bu sürümünde Google ile giriş kullanılamıyor.',
     googleSignIn: 'Lusi, Google oturumunu tamamlayamadı. Tekrar dene.',
     googleBrowser: 'Lusi, varsayılan tarayıcını açamadı.',
     googleConsent: 'Google posta erişimine izin verilmedi. Tekrar giriş yapıp posta erişimine izin ver.',

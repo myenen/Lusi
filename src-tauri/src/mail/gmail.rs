@@ -28,16 +28,39 @@ struct ClientConfig {
 
 impl ClientConfig {
     fn load() -> Result<Self, MailError> {
-        let id = env::var("LUSI_GOOGLE_CLIENT_ID")
-            .ok()
-            .or_else(|| option_env!("LUSI_GOOGLE_CLIENT_ID").map(str::to_owned))
+        Self::from_sources(
+            env::var("LUSI_GOOGLE_CLIENT_ID").ok().as_deref(),
+            env::var("LUSI_GOOGLE_CLIENT_SECRET")
+                .ok()
+                .map(Zeroizing::new),
+            option_env!("LUSI_GOOGLE_CLIENT_ID"),
+            option_env!("LUSI_GOOGLE_CLIENT_SECRET"),
+        )
+    }
+
+    fn from_sources(
+        runtime_id: Option<&str>,
+        runtime_secret: Option<Zeroizing<String>>,
+        packaged_id: Option<&str>,
+        packaged_secret: Option<&str>,
+    ) -> Result<Self, MailError> {
+        let id = runtime_id
+            .filter(|id| !id.is_empty())
+            .or(packaged_id)
             .filter(|id| id.ends_with(".apps.googleusercontent.com") && id.len() <= 512)
             .ok_or(MailError::GoogleNotConfigured)?;
-        let secret = env::var("LUSI_GOOGLE_CLIENT_SECRET")
-            .ok()
+        let secret = runtime_secret
             .filter(|secret| !secret.is_empty())
-            .map(Zeroizing::new);
-        Ok(Self { id, secret })
+            .or_else(|| {
+                // A developer-supplied client ID must not inherit a different client's parameter.
+                packaged_secret
+                    .filter(|secret| packaged_id == Some(id) && !secret.is_empty())
+                    .map(|secret| Zeroizing::new(secret.to_owned()))
+            });
+        Ok(Self {
+            id: id.to_owned(),
+            secret,
+        })
     }
 
     async fn exchange(&self, parameters: &[(&str, &str)]) -> Result<TokenResponse, MailError> {
@@ -527,4 +550,47 @@ mod tests {
         ).unwrap();
         assert_eq!(response.into_tokens().err(), Some(MailError::GoogleConsent));
     }
+}
+#[test]
+fn uses_the_packaged_desktop_client_without_runtime_settings() {
+    let id = "release-fixture.apps.googleusercontent.com";
+    let config =
+        ClientConfig::from_sources(None, None, Some(id), Some("fixture-parameter")).unwrap();
+    assert_eq!(config.id, id);
+    assert_eq!(
+        config.secret.as_deref().map(String::as_str),
+        Some("fixture-parameter")
+    );
+    let config = ClientConfig::from_sources(Some(""), None, Some(id), Some("")).unwrap();
+    assert!(config.secret.is_none());
+    assert!(matches!(
+        ClientConfig::from_sources(None, None, Some(""), None),
+        Err(MailError::GoogleNotConfigured)
+    ));
+}
+
+#[test]
+fn does_not_pair_a_developer_client_with_the_packaged_clients_parameter() {
+    let runtime_id = "dev-fixture.apps.googleusercontent.com";
+    let packaged_id = "release-fixture.apps.googleusercontent.com";
+    let config = ClientConfig::from_sources(
+        Some(runtime_id),
+        None,
+        Some(packaged_id),
+        Some("release-parameter"),
+    )
+    .unwrap();
+    assert_eq!(config.id, runtime_id);
+    assert!(config.secret.is_none());
+    let config = ClientConfig::from_sources(
+        Some(runtime_id),
+        Some(Zeroizing::new("dev-parameter".to_owned())),
+        Some(packaged_id),
+        Some("release-parameter"),
+    )
+    .unwrap();
+    assert_eq!(
+        config.secret.as_deref().map(String::as_str),
+        Some("dev-parameter")
+    );
 }
