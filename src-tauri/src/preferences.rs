@@ -33,6 +33,9 @@ pub struct Preferences {
     sidebar_collapsed: bool,
     sidebar_width: u16,
     list_width: u16,
+    mail_notifications: bool,
+    notification_details: bool,
+    keep_running_on_close: bool,
 }
 
 impl Default for Preferences {
@@ -44,11 +47,27 @@ impl Default for Preferences {
             sidebar_collapsed: false,
             sidebar_width: 222,
             list_width: 380,
+            mail_notifications: true,
+            notification_details: false,
+            keep_running_on_close: true,
         }
     }
 }
 
 impl Preferences {
+    fn is_turkish(&self) -> bool {
+        match self.language {
+            Language::Tr => true,
+            Language::En => false,
+            Language::System => sys_locale::get_locale().is_some_and(|locale| {
+                locale
+                    .split(['-', '_'])
+                    .next()
+                    .is_some_and(|code| code.eq_ignore_ascii_case("tr"))
+            }),
+        }
+    }
+
     fn validated(mut self) -> Self {
         self.sidebar_width = self.sidebar_width.clamp(190, 272);
         self.list_width = self.list_width.clamp(290, 444);
@@ -70,6 +89,28 @@ fn preferences_path(app: &AppHandle) -> Result<PathBuf, &'static str> {
         .app_config_dir()
         .map(|directory| directory.join("ui-preferences.json"))
         .map_err(|_| "Appearance preferences are unavailable.")
+}
+
+pub(crate) fn notification_options(app: &AppHandle) -> Option<(bool, bool)> {
+    let preferences = read_preferences(&preferences_path(app).ok()?).ok()?;
+    preferences
+        .mail_notifications
+        .then(|| (preferences.notification_details, preferences.is_turkish()))
+}
+
+pub(crate) fn keep_running_on_close(app: &AppHandle) -> bool {
+    preferences_path(app)
+        .ok()
+        .and_then(|path| read_preferences(&path).ok())
+        .is_some_and(|preferences| preferences.keep_running_on_close)
+}
+
+pub(crate) fn tray_is_turkish(app: &AppHandle) -> bool {
+    preferences_path(app)
+        .ok()
+        .and_then(|path| read_preferences(&path).ok())
+        .unwrap_or_default()
+        .is_turkish()
 }
 
 fn read_preferences(path: &Path) -> io::Result<Preferences> {
@@ -128,8 +169,11 @@ pub fn load_ui_preferences(app: AppHandle) -> Result<LoadedPreferences, &'static
 
 #[tauri::command]
 pub fn save_ui_preferences(app: AppHandle, preferences: Preferences) -> Result<(), &'static str> {
+    let turkish = preferences.is_turkish();
     write_preferences(&preferences_path(&app)?, preferences)
-        .map_err(|_| "Could not save appearance preferences.")
+        .map_err(|_| "Could not save appearance preferences.")?;
+    crate::desktop::update_menu_language(&app, turkish);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -142,6 +186,9 @@ mod tests {
         assert_eq!(preferences.theme, Appearance::Light);
         assert_eq!(preferences.theme_id, "default");
         assert_eq!(preferences.language, Language::System);
+        assert!(preferences.mail_notifications);
+        assert!(!preferences.notification_details);
+        assert!(preferences.keep_running_on_close);
         Ok(())
     }
 
@@ -158,6 +205,7 @@ mod tests {
                 sidebar_collapsed: false,
                 sidebar_width: 190,
                 list_width: 444,
+                ..Preferences::default()
             }
         );
         Ok(())
@@ -186,6 +234,9 @@ mod tests {
             sidebar_collapsed: true,
             sidebar_width: 244,
             list_width: 386,
+            mail_notifications: false,
+            notification_details: true,
+            keep_running_on_close: false,
         };
         write_preferences(&path, custom)?;
         let saved = read_preferences(&path)?;
@@ -196,9 +247,22 @@ mod tests {
                 saved.language,
                 saved.sidebar_collapsed,
                 saved.sidebar_width,
-                saved.list_width
+                saved.list_width,
+                saved.mail_notifications,
+                saved.notification_details,
+                saved.keep_running_on_close
             ),
-            (Appearance::Dark, "forest", Language::Tr, true, 244, 386)
+            (
+                Appearance::Dark,
+                "forest",
+                Language::Tr,
+                true,
+                244,
+                386,
+                false,
+                true,
+                false
+            )
         );
         fs::write(&path, "invalid preferences")?;
         assert_eq!(read_preferences(&path)?, Preferences::default());

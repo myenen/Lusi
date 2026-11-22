@@ -4,11 +4,14 @@ pub mod discovery;
 mod gmail;
 mod html;
 mod imap;
+pub(crate) mod notifications;
 mod reply;
+mod search;
 mod setup_diagnostics;
 mod smtp;
 mod storage;
 mod summary;
+pub(crate) mod sync;
 
 use crate::unread_badge::UnreadBadge;
 use serde::{Deserialize, Serialize};
@@ -20,6 +23,7 @@ use zeroize::Zeroizing;
 
 pub(crate) use attachments::AttachmentPreviews;
 pub use gmail::GmailSession;
+use search::{SearchPage, SearchRequest};
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +85,7 @@ pub struct MessageKey {
     uid: u32,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailHeader {
     key: MessageKey,
@@ -351,26 +355,7 @@ pub async fn switch_connected_account(
 ) -> Result<Inbox, MailError> {
     let inbox = database(&app, move |db, _| storage::select_account(db, account_id)).await?;
     update_unread_badge(&app, None).await;
-    tauri::async_runtime::spawn(async move {
-        let operations = app.state::<MailOperations>();
-        let _operation = operations.0.lock().await;
-        if !matches!(
-            database(&app, move |db, _| storage::is_active(db, account_id)).await,
-            Ok(true)
-        ) {
-            return;
-        }
-        let unread = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let (account, auth) = stored_connection(&app, account_id).await.ok()?;
-            imap::fetch_inbox_unread(&account, &auth).await
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some(unread) = unread {
-            update_unread_badge(&app, Some((account_id, unread))).await;
-        }
-    });
+    app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
 }
 
@@ -410,6 +395,7 @@ pub async fn connect_imap_account(
     setup_diagnostics::record(format_args!("storage ok={}", result.is_ok()));
     let inbox = result?;
     update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
+    app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
 }
 
@@ -449,24 +435,16 @@ pub async fn connect_gmail_account(
         .save_authorized(email, authorized.access, save)
         .await?;
     update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
+    app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
 }
 
 #[tauri::command]
 pub async fn refresh_connected_inbox(
     app: AppHandle,
-    operations: State<'_, MailOperations>,
     account_id: AccountId,
 ) -> Result<Inbox, MailError> {
-    let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    let (headers, unread) = imap::inbox(&account, &auth).await?;
-    let inbox = database(&app, move |db, _| {
-        storage::update_snapshot(db, account_id, headers)
-    })
-    .await?;
-    update_unread_badge(&app, unread.map(|count| (account_id, count))).await;
-    Ok(inbox)
+    sync::refresh(&app, account_id, false).await
 }
 
 #[tauri::command]
@@ -502,6 +480,19 @@ pub async fn read_older_connected_messages(
     }
     let (account, auth) = stored_connection(&app, account_id).await?;
     imap::older_messages(&account, &auth, &folder, before).await
+}
+
+#[tauri::command]
+pub async fn search_connected_messages(
+    app: AppHandle,
+    account_id: AccountId,
+    folder: String,
+    mut request: SearchRequest,
+) -> Result<SearchPage, MailError> {
+    validate_folder(&folder)?;
+    request.validate()?;
+    let (account, auth) = stored_connection(&app, account_id).await?;
+    imap::search_messages(&account, &auth, &folder, &request).await
 }
 
 fn validate_folder(folder: &str) -> Result<(), MailError> {

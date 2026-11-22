@@ -31,6 +31,7 @@ pub(super) fn sanitize_outgoing_html(html: &str) -> String {
                 "del",
                 "div",
                 "em",
+                "font",
                 "h1",
                 "h2",
                 "h3",
@@ -51,8 +52,26 @@ pub(super) fn sanitize_outgoing_html(html: &str) -> String {
             ]
             .into(),
         )
-        .generic_attributes([].into())
-        .tag_attributes([("a", ["href"].into())].into())
+        .generic_attributes(["align", "style"].into())
+        .tag_attributes(
+            [
+                ("a", ["href"].into()),
+                ("font", ["color", "face", "size"].into()),
+            ]
+            .into(),
+        )
+        .filter_style_properties(
+            [
+                "color",
+                "font-family",
+                "font-size",
+                "font-style",
+                "font-weight",
+                "text-align",
+                "text-decoration",
+            ]
+            .into(),
+        )
         .clean_content_tags(
             [
                 "iframe", "math", "object", "script", "style", "svg", "template", "title",
@@ -387,5 +406,21 @@ mod tests {
         let (body, html) = read_body(b"Content-Type: text/plain\r\n\r\nA literal <b> tag.");
         assert_eq!(body.as_deref(), Some("A literal <b> tag."));
         assert!(html.is_none());
+    }
+
+    #[test]
+    fn keeps_outgoing_text_formatting_and_ignores_layout_styles() {
+        let html = sanitize_outgoing_html(concat!(
+            r#"<p style="text-align: center; position: fixed; font-weight: bold">"#,
+            r##"<font face="Georgia" size="5" color="#3452ba">Preview</font>"##,
+            r#"<a href="https://example.test/">Example</a></p>"#,
+        ));
+        assert!(html.contains("text-align:center"));
+        assert!(html.contains("font-weight:bold"));
+        assert!(html.contains(r#"face="Georgia""#));
+        assert!(html.contains(r#"size="5""#));
+        assert!(html.contains(r##"color="#3452ba""##));
+        assert!(html.contains(r#"href="https://example.test/""#));
+        assert!(!html.contains("position"));
     }
 }

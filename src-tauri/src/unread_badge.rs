@@ -108,7 +108,7 @@ mod tests {
         assert!(overlay_icon(0).is_none());
         let one = overlay_icon(1).unwrap();
         assert_eq!((one.width(), one.height()), (32, 32));
-        assert!(one.rgba().chunks_exact(4).any(|pixel| pixel == [255; 4]));
+        assert!(one.rgba().as_chunks::<4>().0.contains(&[255; 4]));
         assert_ne!(one.rgba(), overlay_icon(2).unwrap().rgba());
         assert_ne!(one.rgba(), overlay_icon(100).unwrap().rgba());
         assert_eq!(

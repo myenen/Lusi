@@ -1,10 +1,11 @@
-import { Check, Plus, Settings2, UserRound, X } from 'lucide-react';
+import { Bell, Check, Plus, Settings2, UserRound, X } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useLabels } from '../../app/i18n';
 import { LanguageSelect } from '../../app/LanguageSelect';
 import { ThemePresetSelect } from '../../app/ThemePresetSelect';
 import { ThemeSelect } from '../../app/ThemeSelect';
 import type { Preferences } from '../../app/ui-preferences';
+import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
 import { AccountSetup } from '../accounts/AccountSetup';
@@ -114,6 +115,26 @@ export function SettingsDrawer({ accountId, connectedEmail, accounts, accountsLo
               <ThemeSelect theme={preferences.theme} onChange={(theme) => onUpdate({ theme })} disabled={false} />
               <ThemePresetSelect value={themeId} onChange={(themeId) => onUpdate({ themeId })} disabled={false} />
               <LanguageSelect value={preferences.language} onChange={(language) => onUpdate({ language })} disabled={false} />
+              <label className="background-setting">
+                <Checkbox checked={preferences.keepRunningOnClose}
+                  onCheckedChange={(keepRunningOnClose) => onUpdate({ keepRunningOnClose })} />
+                {labels.keepRunningOnClose}
+              </label>
+            </div>
+          </section>
+          <section className="settings-section" aria-labelledby="notification-settings-title">
+            <h3 id="notification-settings-title"><Bell size={17} aria-hidden="true" />{labels.notifications}</h3>
+            <div className="settings-system notification-settings">
+              <label>
+                <Checkbox checked={preferences.mailNotifications}
+                  onCheckedChange={(mailNotifications) => onUpdate({ mailNotifications })} />
+                {labels.notifyNewMail}
+              </label>
+              <label>
+                <Checkbox checked={preferences.notificationDetails} disabled={!preferences.mailNotifications}
+                  onCheckedChange={(notificationDetails) => onUpdate({ notificationDetails })} />
+                {labels.showNotificationDetails}
+              </label>
             </div>
           </section>
         </ScrollArea>

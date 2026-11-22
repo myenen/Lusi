@@ -39,7 +39,7 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let read_version =
         |db: &Connection| db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0));
-    if read_version(db)? == 9 {
+    if read_version(db)? == 10 {
         return Ok(());
     }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -55,7 +55,7 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             );
         ",
         )?,
-        1..=9 => {}
+        1..=10 => {}
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     if version < 2 {
@@ -117,6 +117,9 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
              PRAGMA user_version = 9;",
         )?;
     }
+    if version < 10 {
+        transaction.execute_batch(include_str!("migration-10.sql"))?;
+    }
     transaction.commit()
 }
 
@@ -126,7 +129,7 @@ pub(super) fn remember_unread(
     unread: u32,
 ) -> Result<(), MailError> {
     db.execute(
-        "UPDATE account SET inbox_unread = ? WHERE id = ?",
+        "UPDATE account SET inbox_unread = ?1 WHERE id = ?2 AND inbox_unread IS NOT ?1",
         params![unread, id],
     )
     .map(|_| ())
@@ -194,15 +197,18 @@ pub(super) fn find_account(
 
 pub fn snapshot(db: &mut Connection) -> Result<Option<Inbox>, MailError> {
     let transaction = db.transaction().map_err(|_| MailError::Storage)?;
-    let active = transaction
-        .query_row(
-            "SELECT account_id FROM active_account WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|_| MailError::Storage)?;
+    let active = active_account_id(&transaction)?;
     active.map(|id| snapshot_for(&transaction, id)).transpose()
+}
+
+pub(super) fn active_account_id(db: &Connection) -> Result<Option<AccountId>, MailError> {
+    db.query_row(
+        "SELECT account_id FROM active_account WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|_| MailError::Storage)
 }
 
 pub(super) fn select_account(db: &mut Connection, id: AccountId) -> Result<Inbox, MailError> {
@@ -222,7 +228,7 @@ fn set_active(db: &Connection, id: AccountId) -> Result<(), MailError> {
     ).map(|_| ()).map_err(|_| MailError::Storage)
 }
 
-fn snapshot_for(db: &Connection, id: AccountId) -> Result<Inbox, MailError> {
+pub(super) fn snapshot_for(db: &Connection, id: AccountId) -> Result<Inbox, MailError> {
     let Some(account) = account(db, id)? else {
         return Err(MailError::NoAccount);
     };
@@ -557,28 +563,59 @@ pub(super) fn connection_details<C: Borrow<keyring::Entry>>(
     Ok((details, password))
 }
 
-pub fn update_snapshot(
+pub(super) fn commit_inbox_sync(
     db: &mut Connection,
     id: AccountId,
-    headers: Vec<MailHeader>,
-) -> Result<Inbox, MailError> {
+    headers: &[MailHeader],
+    cursor: MessageKey,
+    headers_changed: bool,
+) -> Result<Vec<MailHeader>, MailError> {
     let transaction = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| MailError::Storage)?;
-    let details = account(&transaction, id)?.ok_or(MailError::NoAccount)?;
-    replace_headers(&transaction, id, &headers).map_err(|_| MailError::Storage)?;
-    let can_send = details.uses_gmail_oauth() || has_outgoing(&transaction, id)?;
-    let oauth_provider = details
-        .uses_gmail_oauth()
-        .then_some(super::discovery::OAuthProvider::Gmail);
+    let previous = transaction
+        .query_row(
+            "SELECT uid_validity, high_uid FROM inbox_sync_state WHERE account_id = ?",
+            [id],
+            |row| {
+                Ok(MessageKey {
+                    uid_validity: row.get(0)?,
+                    uid: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| MailError::Storage)?;
+    let same_generation = previous.filter(|previous| previous.uid_validity == cursor.uid_validity);
+    let newly_unread = same_generation.map_or_else(Vec::new, |previous| {
+        headers
+            .iter()
+            .filter(|header| {
+                header.unread
+                    && header.key.uid_validity == cursor.uid_validity
+                    && header.key.uid > previous.uid
+            })
+            .cloned()
+            .collect()
+    });
+    let high_uid = same_generation.map_or(cursor.uid, |previous| previous.uid.max(cursor.uid));
+    if headers_changed {
+        replace_headers(&transaction, id, headers).map_err(|_| MailError::Storage)?;
+    }
+    if previous
+        != Some(MessageKey {
+            uid_validity: cursor.uid_validity,
+            uid: high_uid,
+        })
+    {
+        transaction.execute(
+            "INSERT INTO inbox_sync_state (account_id, uid_validity, high_uid) VALUES (?, ?, ?)
+             ON CONFLICT(account_id) DO UPDATE SET uid_validity = excluded.uid_validity, high_uid = excluded.high_uid",
+            params![id, cursor.uid_validity, high_uid],
+        ).map_err(|_| MailError::Storage)?;
+    }
     transaction.commit().map_err(|_| MailError::Storage)?;
-    Ok(Inbox {
-        account_id: id,
-        email: details.email,
-        headers,
-        can_send,
-        oauth_provider,
-    })
+    Ok(newly_unread)
 }
 
 fn replace_headers(db: &Connection, id: AccountId, headers: &[MailHeader]) -> rusqlite::Result<()> {
@@ -613,7 +650,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mail.sqlite3");
         let mut db = open(&path).unwrap();
-        db.execute_batch("DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
+        db.execute_batch("DROP TABLE inbox_sync_state; DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
             .unwrap();
         let account = |email: &str| Account {
             email: email.into(),
@@ -829,7 +866,14 @@ mod tests {
                 .as_str(),
             "second password"
         );
-        update_snapshot(&mut db, second, vec![header("updated second message")]).unwrap();
+        commit_inbox_sync(
+            &mut db,
+            second,
+            &[header("updated second message")],
+            key,
+            true,
+        )
+        .unwrap();
         assert_eq!(
             snapshot(&mut db).unwrap().unwrap().headers[0].subject,
             "first password"
@@ -1023,6 +1067,77 @@ mod tests {
     }
 
     #[test]
+    fn notifies_only_new_unread_uids_across_restarts_and_mailbox_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("test.sqlite");
+        let mut db = Connection::open(&path).unwrap();
+        migrate(&mut db).unwrap();
+        for id in [1, 2] {
+            db.execute(
+                "INSERT INTO account (id, email, host, port) VALUES (?1, ?2, 'imap.example.test', 993)",
+                params![id, format!("mail{id}@example.test")],
+            ).unwrap();
+        }
+        let header = |uid_validity, uid, unread| MailHeader {
+            key: MessageKey { uid_validity, uid },
+            sender: "Sender".into(),
+            address: "sender@example.test".into(),
+            subject: "A message".into(),
+            sent_at: None,
+            unread,
+            starred: false,
+            has_attachments: false,
+        };
+        let existing = header(7, 10, true);
+        let baseline = MessageKey {
+            uid_validity: 7,
+            uid: 12,
+        };
+        assert!(commit_inbox_sync(&mut db, 1, &[existing], baseline, true)
+            .unwrap()
+            .is_empty());
+        let incoming = header(7, 13, true);
+        let read = header(7, 14, false);
+        let old = header(7, 11, true);
+        let headers = [read.clone(), incoming.clone(), old];
+        assert_eq!(
+            commit_inbox_sync(&mut db, 1, &headers, read.key, true).unwrap(),
+            vec![incoming.clone()]
+        );
+        drop(db);
+        let mut db = Connection::open(&path).unwrap();
+        assert!(commit_inbox_sync(&mut db, 1, &headers, read.key, false)
+            .unwrap()
+            .is_empty());
+        assert!(commit_inbox_sync(&mut db, 1, &[], baseline, true)
+            .unwrap()
+            .is_empty());
+        assert!(commit_inbox_sync(
+            &mut db,
+            1,
+            std::slice::from_ref(&incoming),
+            incoming.key,
+            true
+        )
+        .unwrap()
+        .is_empty());
+        assert!(commit_inbox_sync(&mut db, 2, &headers, read.key, true)
+            .unwrap()
+            .is_empty());
+        let reset = header(8, 50, true);
+        assert!(
+            commit_inbox_sync(&mut db, 1, std::slice::from_ref(&reset), reset.key, true)
+                .unwrap()
+                .is_empty()
+        );
+        let next = header(8, 51, true);
+        assert_eq!(
+            commit_inbox_sync(&mut db, 1, std::slice::from_ref(&next), next.key, true).unwrap(),
+            vec![next]
+        );
+    }
+
+    #[test]
     fn replaces_inbox_by_uid_validity_and_rolls_back_failed_snapshots() {
         let mut db = Connection::open_in_memory().unwrap();
         migrate(&mut db).unwrap();
@@ -1046,10 +1161,12 @@ mod tests {
             has_attachments: true,
         };
         set_active(&db, 1).unwrap();
-        update_snapshot(&mut db, 1, vec![header(7)]).unwrap();
-        assert!(update_snapshot(&mut db, 1, vec![header(9), header(9)]).is_err());
+        commit_inbox_sync(&mut db, 1, &[header(7)], header(7).key, true).unwrap();
+        assert!(
+            commit_inbox_sync(&mut db, 1, &[header(9), header(9)], header(9).key, true).is_err()
+        );
         assert!(contains_message(&db, 1, header(7).key).unwrap());
-        update_snapshot(&mut db, 1, vec![header(9)]).unwrap();
+        commit_inbox_sync(&mut db, 1, &[header(9)], header(9).key, true).unwrap();
         assert!(!contains_message(&db, 1, header(7).key).unwrap());
         assert_eq!(snapshot(&mut db).unwrap().unwrap().headers, vec![header(9)]);
     }

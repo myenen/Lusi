@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
+mod desktop;
 mod mail;
 mod preferences;
 mod unread_badge;
@@ -9,10 +10,21 @@ mod unread_badge;
 fn main() -> tauri::Result<()> {
     tauri::Builder::default()
         .enable_macos_default_menu(false)
+        .plugin(tauri_plugin_notification::init())
         .manage(mail::MailOperations::default())
         .manage(mail::GmailSession::default())
         .manage(mail::AttachmentPreviews::default())
+        .manage(mail::sync::InboxSync::default())
         .manage(unread_badge::UnreadBadge::default())
+        .on_window_event(desktop::handle_window_event)
+        .setup(|app| {
+            mail::notifications::install(app.handle())?;
+            if let Err(error) = desktop::install_tray(app.handle()) {
+                log::warn!("Could not initialize Lusi's system tray: {error}");
+            }
+            tauri::async_runtime::spawn(mail::sync::run(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             preferences::load_ui_preferences,
             preferences::save_ui_preferences,
@@ -27,6 +39,7 @@ fn main() -> tauri::Result<()> {
             mail::list_connected_folders,
             mail::read_connected_folder,
             mail::read_older_connected_messages,
+            mail::search_connected_messages,
             mail::read_connected_message,
             mail::download_connected_attachment,
             mail::open_connected_attachment,
@@ -35,10 +48,16 @@ fn main() -> tauri::Result<()> {
             mail::update_connected_messages
         ])
         .build(tauri::generate_context!())?
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<mail::AttachmentPreviews>().cleanup();
+        .run(|app, event| match event {
+            RunEvent::Exit => app.state::<mail::AttachmentPreviews>().cleanup(),
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                desktop::show_main(app);
             }
+            _ => {}
         });
     Ok(())
 }

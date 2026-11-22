@@ -1,17 +1,22 @@
 use super::{
-    attachments, validate_folder, Account, BatchActionResult, FolderKind, MailAuth, MailError,
-    MailFolder, MailHeader, MessageAction, MessageKey, OlderMessages, OpenedMessage,
+    attachments,
+    search::{SearchPage, SearchRequest},
+    validate_folder, Account, BatchActionResult, FolderKind, MailAuth, MailError, MailFolder,
+    MailHeader, MessageAction, MessageKey, OlderMessages, OpenedMessage,
 };
 use async_imap::{
-    imap_proto::SectionPath,
-    types::{Capabilities, Capability, Flag, NameAttribute},
+    imap_proto::{MailboxDatum, Response, SectionPath, Status},
+    types::{Capabilities, Capability, Fetch, Flag, NameAttribute},
     Authenticator, Client, Session,
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use futures_util::TryStreamExt;
 use mail_parser::MessageParser;
 use native_tls::Protocol;
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -40,12 +45,115 @@ pub async fn inbox(
     Ok((headers, unread))
 }
 
-pub(super) async fn fetch_inbox_unread(account: &Account, auth: &MailAuth) -> Option<u32> {
-    let mut session = timeout(REQUEST_TIMEOUT, authenticate(account, auth))
+pub(super) async fn sync_inbox(
+    account: &Account,
+    auth: &MailAuth,
+    cached: &[MailHeader],
+) -> Result<(MessageKey, Vec<MailHeader>, Option<u32>), MailError> {
+    let (mut session, (cursor, headers)) = timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        let headers = sync_inbox_headers(&mut session, cached).await?;
+        Ok::<_, MailError>((session, headers))
+    })
+    .await
+    .map_err(|_| MailError::Timeout)??;
+    let unread = inbox_unread(&mut session, Some("INBOX")).await;
+    Ok((cursor, headers, unread))
+}
+
+pub(super) async fn inbox_header(
+    account: &Account,
+    auth: &MailAuth,
+    key: MessageKey,
+) -> Result<MailHeader, MailError> {
+    timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        let mailbox = session
+            .examine("INBOX")
+            .await
+            .map_err(|_| MailError::Inbox)?;
+        if mailbox.uid_validity != Some(key.uid_validity) {
+            return Err(MailError::MailboxChanged);
+        }
+        let mut fetches = session
+            .uid_fetch(key.uid.to_string(), HEADER_QUERY)
+            .await
+            .map_err(|_| MailError::Inbox)?;
+        let mut header = None;
+        let parser = MessageParser::default();
+        while let Some(fetch) = fetches.try_next().await.map_err(|_| MailError::Inbox)? {
+            if fetch.uid == Some(key.uid) && fetch.header().is_some() {
+                header = Some(header_from_fetch(&parser, &fetch, key));
+            }
+        }
+        header.ok_or(MailError::MessageMissing)
+    })
+    .await
+    .map_err(|_| MailError::Timeout)?
+}
+
+pub(super) async fn idle_inbox(
+    account: &Account,
+    auth: &MailAuth,
+    max_wait: Duration,
+) -> Result<bool, MailError> {
+    let session = timeout(REQUEST_TIMEOUT, authenticate(account, auth))
         .await
-        .ok()?
-        .ok()?;
-    inbox_unread(&mut session, None).await
+        .map_err(|_| MailError::Timeout)??;
+    wait_for_inbox_idle(session, max_wait).await
+}
+
+async fn wait_for_inbox_idle<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    mut session: Session<T>,
+    max_wait: Duration,
+) -> Result<bool, MailError> {
+    let handle = timeout(REQUEST_TIMEOUT, async {
+        let capabilities = session.capabilities().await.map_err(|_| MailError::Inbox)?;
+        if !capabilities.has_str("IDLE") && !capabilities.has_str("IMAP4rev2") {
+            return Ok(None);
+        }
+        session
+            .examine("INBOX")
+            .await
+            .map_err(|_| MailError::Inbox)?;
+        let mut handle = session.idle();
+        if handle.init().await.is_err() {
+            return Ok(None);
+        }
+        Ok(Some(handle))
+    })
+    .await
+    .map_err(|_| MailError::Timeout)??;
+    let Some(mut handle) = handle else {
+        return Ok(false);
+    };
+    let response = {
+        let (response, _interrupt) = handle.wait_with_timeout(max_wait);
+        timeout(max_wait, response).await
+    };
+    if let Ok(response) = response {
+        use async_imap::extensions::idle::IdleResponse;
+        match response {
+            Ok(IdleResponse::NewData(data))
+                if matches!(
+                    data.parsed(),
+                    Response::Data {
+                        status: Status::Bye,
+                        ..
+                    }
+                ) =>
+            {
+                return Err(MailError::Network)
+            }
+            Ok(IdleResponse::ManualInterrupt) | Err(_) => return Err(MailError::Network),
+            _ => {}
+        }
+    }
+    timeout(Duration::from_secs(3), handle.done())
+        .await
+        .map_err(|_| MailError::Timeout)?
+        .map_err(|_| MailError::Network)?;
+    Ok(true)
 }
 
 async fn inbox_unread<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -89,6 +197,159 @@ pub(super) async fn older_messages(
     })
     .await
     .map_err(|_| MailError::Timeout)?
+}
+
+pub(super) async fn search_messages(
+    account: &Account,
+    auth: &MailAuth,
+    folder: &str,
+    request: &SearchRequest,
+) -> Result<SearchPage, MailError> {
+    timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        fetch_search_page(&mut session, folder, request).await
+    })
+    .await
+    .map_err(|_| MailError::Timeout)?
+}
+
+async fn fetch_search_page<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    folder: &str,
+    request: &SearchRequest,
+) -> Result<SearchPage, MailError> {
+    let error = || list_error(folder);
+    let mailbox = session.examine(folder).await.map_err(|_| error())?;
+    let uid_validity = mailbox
+        .uid_validity
+        .filter(|uid| *uid > 0)
+        .ok_or_else(error)?;
+    if request
+        .cursor
+        .is_some_and(|key| key.uid_validity != uid_validity)
+    {
+        return Err(MailError::MailboxChanged);
+    }
+    let (first, last) = match request.cursor {
+        None => (1, u32::MAX),
+        Some(key) if request.oldest_first => (key.uid.saturating_add(1), u32::MAX),
+        Some(key) => (1, key.uid.saturating_sub(1)),
+    };
+    if mailbox.exists == 0
+        || first > last
+        || request
+            .cursor
+            .is_some_and(|key| request.oldest_first && key.uid == u32::MAX)
+    {
+        return Ok(SearchPage {
+            headers: Vec::new(),
+            next_cursor: None,
+        });
+    }
+
+    let mut uids = search_uids(session, request, first, last)
+        .await
+        .ok_or_else(error)?;
+    uids.retain(|uid| (first..=last).contains(uid));
+    let mut uids: Vec<_> = uids.into_iter().collect();
+    uids.sort_unstable();
+    if !request.oldest_first {
+        uids.reverse();
+    }
+    let has_more = uids.len() > WINDOW_SIZE as usize;
+    uids.truncate(WINDOW_SIZE as usize);
+    let Some(&last_uid) = uids.last() else {
+        return Ok(SearchPage {
+            headers: Vec::new(),
+            next_cursor: None,
+        });
+    };
+    let uid_set = uids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut fetches = session
+        .uid_fetch(uid_set, HEADER_QUERY)
+        .await
+        .map_err(|_| error())?;
+    let parser = MessageParser::default();
+    let mut headers = Vec::new();
+    while let Some(fetch) = fetches.try_next().await.map_err(|_| error())? {
+        if let Some(uid) = fetch.uid.filter(|uid| uids.contains(uid)) {
+            headers.push(header_from_fetch(
+                &parser,
+                &fetch,
+                MessageKey { uid_validity, uid },
+            ));
+            if headers.len() > WINDOW_SIZE as usize {
+                return Err(error());
+            }
+        }
+    }
+    headers.sort_unstable_by_key(|header| header.key.uid);
+    headers.dedup_by_key(|header| header.key.uid);
+    if !request.oldest_first {
+        headers.reverse();
+    }
+    Ok(SearchPage {
+        headers,
+        next_cursor: has_more.then_some(MessageKey {
+            uid_validity,
+            uid: last_uid,
+        }),
+    })
+}
+
+async fn search_uids<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    request: &SearchRequest,
+    first: u32,
+    last: u32,
+) -> Option<HashSet<u32>> {
+    let qualifier = if request.unread_only { "UNSEEN " } else { "" };
+    let bytes = request.query.len();
+    let charset = if request.query.is_ascii() {
+        ""
+    } else {
+        "CHARSET UTF-8 "
+    };
+    // Synchronizing literals preserve Unicode and keep user text out of the IMAP grammar.
+    let tag = session
+        .run_command(format!(
+            "UID SEARCH {charset}UID {first}:{last} {qualifier}OR FROM {{{bytes}}}"
+        ))
+        .await
+        .ok()?;
+    let mut remaining_literals = 2;
+    let mut uids = HashSet::new();
+    while let Some(response) = session.read_response().await.ok()? {
+        match response.parsed() {
+            Response::Continue(_) if remaining_literals > 0 => {
+                if remaining_literals == 2 {
+                    session
+                        .run_command_untagged(format!("{} SUBJECT {{{bytes}}}", request.query))
+                        .await
+                        .ok()?;
+                } else {
+                    session.run_command_untagged(&request.query).await.ok()?;
+                }
+                remaining_literals -= 1;
+            }
+            Response::MailboxData(MailboxDatum::Search(matches)) => {
+                uids.extend(matches.iter().copied())
+            }
+            Response::Done {
+                tag: response_tag,
+                status,
+                ..
+            } if *response_tag == tag => {
+                return (*status == Status::Ok && remaining_literals == 0).then_some(uids);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub async fn message(
@@ -642,6 +903,114 @@ async fn fetch_folder<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
     fetch_headers(session, folder, uid_validity, start, mailbox.exists, None).await
 }
 
+async fn sync_inbox_headers<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    previous: &[MailHeader],
+) -> Result<(MessageKey, Vec<MailHeader>), MailError> {
+    let mailbox = session
+        .examine("INBOX")
+        .await
+        .map_err(|_| MailError::Inbox)?;
+    let uid_validity = mailbox
+        .uid_validity
+        .filter(|uid| *uid > 0)
+        .ok_or(MailError::Inbox)?;
+    let cursor = |headers: &[MailHeader]| MessageKey {
+        uid_validity,
+        uid: mailbox
+            .uid_next
+            .unwrap_or(0)
+            .saturating_sub(1)
+            .max(headers.first().map_or(0, |header| header.key.uid)),
+    };
+    if mailbox.exists == 0 {
+        return Ok((cursor(&[]), Vec::new()));
+    }
+    let start = mailbox.exists.saturating_sub(WINDOW_SIZE - 1).max(1);
+    let mut known = previous
+        .iter()
+        .filter(|header| header.key.uid_validity == uid_validity)
+        .map(|header| (header.key.uid, header))
+        .collect::<BTreeMap<_, _>>();
+    let expected = (mailbox.exists - start + 1) as usize;
+    if known.is_empty() {
+        let headers =
+            fetch_headers(session, "INBOX", uid_validity, start, mailbox.exists, None).await?;
+        return if headers.len() == expected {
+            Ok((cursor(&headers), headers))
+        } else {
+            Err(MailError::Inbox)
+        };
+    }
+
+    let mut headers = Vec::new();
+    let mut missing = HashSet::new();
+    {
+        let mut flags = session
+            .fetch(format!("{start}:{}", mailbox.exists), "(UID FLAGS)")
+            .await
+            .map_err(|_| MailError::Inbox)?;
+        let mut observed = HashSet::new();
+        while let Some(fetch) = flags.try_next().await.map_err(|_| MailError::Inbox)? {
+            if !(start..=mailbox.exists).contains(&fetch.message) {
+                continue;
+            }
+            let Some(uid) = fetch.uid.filter(|uid| *uid > 0) else {
+                continue;
+            };
+            if !observed.insert(uid) {
+                continue;
+            }
+            if observed.len() > WINDOW_SIZE as usize {
+                return Err(MailError::Inbox);
+            }
+            if let Some(header) = known.remove(&uid) {
+                let mut header = header.clone();
+                header.unread = !fetch.flags().any(|flag| flag == Flag::Seen);
+                header.starred = fetch.flags().any(|flag| flag == Flag::Flagged);
+                headers.push(header);
+            } else {
+                missing.insert(uid);
+            }
+        }
+        // A short response can happen during a concurrent expunge. Keep the prior snapshot and retry.
+        if observed.len() != expected {
+            return Err(MailError::Inbox);
+        }
+    }
+    if !missing.is_empty() {
+        let mut uids = missing.iter().copied().collect::<Vec<_>>();
+        uids.sort_unstable();
+        let selection = uids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut fetches = session
+            .uid_fetch(selection, HEADER_QUERY)
+            .await
+            .map_err(|_| MailError::Inbox)?;
+        let parser = MessageParser::default();
+        while let Some(fetch) = fetches.try_next().await.map_err(|_| MailError::Inbox)? {
+            if let Some(uid) = fetch
+                .uid
+                .filter(|uid| fetch.header().is_some() && missing.remove(uid))
+            {
+                headers.push(header_from_fetch(
+                    &parser,
+                    &fetch,
+                    MessageKey { uid_validity, uid },
+                ));
+            }
+        }
+        if !missing.is_empty() {
+            return Err(MailError::Inbox);
+        }
+    }
+    headers.sort_unstable_by_key(|header| std::cmp::Reverse(header.key.uid));
+    Ok((cursor(&headers), headers))
+}
+
 async fn fetch_older_messages<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
     session: &mut Session<T>,
     folder: &str,
@@ -760,37 +1129,11 @@ async fn fetch_headers<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
         else {
             continue;
         };
-        let parsed = fetch
-            .header()
-            .and_then(|bytes| parser.parse(&bytes[..bytes.len().min(16_384)]));
-        let sender = parsed
-            .as_ref()
-            .and_then(|mail| mail.from())
-            .and_then(|address| address.first());
-        let sender_name = sender.as_ref().and_then(|value| value.name());
-        let sender_address = sender.as_ref().and_then(|value| value.address());
-        let subject = parsed.as_ref().and_then(|mail| mail.subject());
-        let sent_at = parsed
-            .as_ref()
-            .and_then(|mail| mail.date())
-            .map(|value| value.to_timestamp());
-        headers.push(MailHeader {
-            key: MessageKey { uid_validity, uid },
-            sender: clean_header(
-                sender_name
-                    .filter(|name| !name.is_empty())
-                    .or(sender_address),
-                160,
-            ),
-            address: clean_header(sender_address, 254),
-            subject: clean_header(subject, 300),
-            sent_at,
-            unread: !fetch.flags().any(|flag| flag == Flag::Seen),
-            starred: fetch.flags().any(|flag| flag == Flag::Flagged),
-            has_attachments: fetch
-                .bodystructure()
-                .is_some_and(|structure| attachments::list(structure).next().is_some()),
-        });
+        headers.push(header_from_fetch(
+            &parser,
+            &fetch,
+            MessageKey { uid_validity, uid },
+        ));
         if headers.len() > WINDOW_SIZE as usize {
             return Err(folder_error());
         }
@@ -798,6 +1141,40 @@ async fn fetch_headers<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
     headers.sort_unstable_by_key(|header| std::cmp::Reverse(header.key.uid));
     headers.dedup_by_key(|header| header.key.uid);
     Ok(headers)
+}
+
+fn header_from_fetch(parser: &MessageParser, fetch: &Fetch, key: MessageKey) -> MailHeader {
+    let parsed = fetch
+        .header()
+        .and_then(|bytes| parser.parse(&bytes[..bytes.len().min(16_384)]));
+    let sender = parsed
+        .as_ref()
+        .and_then(|mail| mail.from())
+        .and_then(|address| address.first());
+    let sender_name = sender.as_ref().and_then(|value| value.name());
+    let sender_address = sender.as_ref().and_then(|value| value.address());
+    let subject = parsed.as_ref().and_then(|mail| mail.subject());
+    let sent_at = parsed
+        .as_ref()
+        .and_then(|mail| mail.date())
+        .map(|value| value.to_timestamp());
+    MailHeader {
+        key,
+        sender: clean_header(
+            sender_name
+                .filter(|name| !name.is_empty())
+                .or(sender_address),
+            160,
+        ),
+        address: clean_header(sender_address, 254),
+        subject: clean_header(subject, 300),
+        sent_at,
+        unread: !fetch.flags().any(|flag| flag == Flag::Seen),
+        starred: fetch.flags().any(|flag| flag == Flag::Flagged),
+        has_attachments: fetch
+            .bodystructure()
+            .is_some_and(|structure| attachments::list(structure).next().is_some()),
+    }
 }
 
 async fn fetch_message<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -923,6 +1300,201 @@ mod tests {
             .write_all(format!("{response}{tag} OK completed\r\n").as_bytes())
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn wakes_on_idle_delivery_and_uses_fallback_without_idle_capability() {
+        tauri::async_runtime::block_on(async {
+            for supported in [true, false] {
+                timeout(Duration::from_secs(5), async {
+                    let (client, server) = duplex(4096);
+                    let fixture = tokio::spawn(async move {
+                        let mut server = BufReader::new(server);
+                        server.get_mut().write_all(b"* OK ready\r\n").await.unwrap();
+                        exchange(
+                            &mut server,
+                            r#"LOGIN "mail@example.test" "fixture-only""#,
+                            "",
+                        )
+                        .await;
+                        let capabilities = if supported {
+                            "* CAPABILITY IMAP4rev1 IDLE\r\n"
+                        } else {
+                            "* CAPABILITY IMAP4rev1\r\n"
+                        };
+                        exchange(&mut server, "CAPABILITY", capabilities).await;
+                        if !supported {
+                            return;
+                        }
+                        exchange(
+                            &mut server,
+                            r#"EXAMINE "INBOX""#,
+                            "* 1 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n",
+                        )
+                        .await;
+                        let mut line = String::new();
+                        server.read_line(&mut line).await.unwrap();
+                        let (tag, command) = line.trim_end().split_once(' ').unwrap();
+                        assert_eq!(command, "IDLE");
+                        let tag = tag.to_owned();
+                        server
+                            .get_mut()
+                            .write_all(b"+ waiting\r\n* 2 EXISTS\r\n")
+                            .await
+                            .unwrap();
+                        line.clear();
+                        server.read_line(&mut line).await.unwrap();
+                        assert_eq!(line, "DONE\r\n");
+                        server
+                            .get_mut()
+                            .write_all(format!("{tag} OK done\r\n").as_bytes())
+                            .await
+                            .unwrap();
+                    });
+                    let session = Client::new(client)
+                        .login("mail@example.test", "fixture-only")
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        wait_for_inbox_idle(session, Duration::from_secs(3)).await,
+                        Ok(supported)
+                    );
+                    fixture.await.unwrap();
+                })
+                .await
+                .unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn syncs_flags_and_removals_without_downloading_known_headers_and_handles_uidvalidity() {
+        tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(5), async {
+                let (client, server) = duplex(8192);
+                let fixture = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    server.get_mut().write_all(b"* OK ready\r\n").await.unwrap();
+                    exchange(&mut server, r#"LOGIN "mail@example.test" "fixture-only""#, "").await;
+                    exchange(&mut server, r#"EXAMINE "INBOX""#,
+                        "* 2 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n").await;
+                    exchange(&mut server, "FETCH 1:2 (UID FLAGS)",
+                        "* 1 FETCH (UID 17 FLAGS (\\Seen \\Flagged))\r\n* 2 FETCH (UID 23 FLAGS ())\r\n").await;
+                    let header = "From: Example <sender@example.test>\r\nSubject: New message\r\n\r\n";
+                    let reply = format!("* 2 FETCH (UID 23 FLAGS () BODY[HEADER]<0> {{{}}}\r\n{header})\r\n", header.len());
+                    exchange(&mut server, &format!("UID FETCH 23 {HEADER_QUERY}"), &reply).await;
+                    exchange(&mut server, r#"EXAMINE "INBOX""#,
+                        "* 1 EXISTS\r\n* OK [UIDVALIDITY 21] replaced\r\n").await;
+                    let reply = format!("* 1 FETCH (UID 17 FLAGS () BODY[HEADER]<0> {{{}}}\r\n{header})\r\n", header.len());
+                    exchange(&mut server, &format!("FETCH 1:1 {HEADER_QUERY}"), &reply).await;
+                });
+                let mut session = Client::new(client).login("mail@example.test", "fixture-only").await.unwrap();
+                let header = |uid| MailHeader {
+                    key: MessageKey { uid_validity: 20, uid }, sender: "Cached sender".into(),
+                    address: "known@example.test".into(), subject: "Cached subject".into(),
+                    sent_at: None, unread: true, starred: false, has_attachments: true,
+                };
+                let (cursor, updated) = sync_inbox_headers(&mut session, &[header(18), header(17)]).await.unwrap();
+                assert_eq!(cursor, MessageKey { uid_validity: 20, uid: 23 });
+                assert_eq!(updated.iter().map(|header| header.key.uid).collect::<Vec<_>>(), vec![23, 17]);
+                assert_eq!(updated[0].subject, "New message");
+                assert_eq!(updated[1].subject, "Cached subject");
+                assert!(!updated[1].unread && updated[1].starred && updated[1].has_attachments);
+                let (_, reset) = sync_inbox_headers(&mut session, &updated).await.unwrap();
+                assert_eq!(reset[0].key, MessageKey { uid_validity: 21, uid: 17 });
+                assert_eq!(reset[0].subject, "New message");
+                fixture.await.unwrap();
+            }).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn searches_utf8_in_both_fields_and_fetches_only_a_page_of_matching_uids() {
+        tauri::async_runtime::block_on(async {
+            timeout(Duration::from_secs(5), async {
+                let (client, server) = duplex(8192);
+                let fixture = tokio::spawn(async move {
+                    let mut server = BufReader::new(server);
+                    server.get_mut().write_all(b"* OK ready\r\n").await.unwrap();
+                    exchange(
+                        &mut server,
+                        r#"LOGIN "mail@example.test" "fixture-only""#,
+                        "",
+                    )
+                    .await;
+                    exchange(
+                        &mut server,
+                        r#"EXAMINE "INBOX""#,
+                        "* 150 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n",
+                    )
+                    .await;
+
+                    let mut line = String::new();
+                    server.read_line(&mut line).await.unwrap();
+                    let (tag, command) = line.trim_end().split_once(' ').unwrap();
+                    assert_eq!(
+                        command,
+                        "UID SEARCH CHARSET UTF-8 UID 1:4294967295 UNSEEN OR FROM {5}"
+                    );
+                    let tag = tag.to_owned();
+                    server.get_mut().write_all(b"+ continue\r\n").await.unwrap();
+                    line.clear();
+                    server.read_line(&mut line).await.unwrap();
+                    assert_eq!(line, "İş? SUBJECT {5}\r\n");
+                    server.get_mut().write_all(b"+ continue\r\n").await.unwrap();
+                    line.clear();
+                    server.read_line(&mut line).await.unwrap();
+                    assert_eq!(line, "İş?\r\n");
+
+                    let matches = (1..=51)
+                        .map(|uid| uid.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    server
+                        .get_mut()
+                        .write_all(format!("* SEARCH {matches}\r\n{tag} OK done\r\n").as_bytes())
+                        .await
+                        .unwrap();
+                    let page = (2..=51)
+                        .rev()
+                        .map(|uid| uid.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    exchange(
+                        &mut server,
+                        &format!("UID FETCH {page} {HEADER_QUERY}"),
+                        "* 23 FETCH (UID 51 FLAGS ())\r\n",
+                    )
+                    .await;
+                });
+                let mut session = Client::new(client)
+                    .login("mail@example.test", "fixture-only")
+                    .await
+                    .unwrap();
+                let mut request = SearchRequest {
+                    query: "İş?".into(),
+                    unread_only: true,
+                    oldest_first: false,
+                    cursor: None,
+                };
+                request.validate().unwrap();
+                let results = fetch_search_page(&mut session, "INBOX", &request)
+                    .await
+                    .unwrap();
+                assert_eq!(results.headers.len(), 1);
+                assert_eq!(results.headers[0].key.uid, 51);
+                assert_eq!(
+                    results.next_cursor,
+                    Some(MessageKey {
+                        uid_validity: 20,
+                        uid: 2
+                    })
+                );
+                fixture.await.unwrap();
+            })
+            .await
+            .unwrap();
+        });
     }
 
     #[test]

@@ -38,9 +38,14 @@
           "permissions": ["core:webview:allow-print"]
         },
         {
+          "identifier": "mail-sync-events",
+          "windows": ["main"],
+          "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+        },
+        {
           "identifier": "mail-account",
           "windows": ["main"],
-          "permissions": ["allow-load-connected-inbox", "allow-list-connected-accounts", "allow-switch-connected-account", "allow-discover-imap-settings", "allow-check-imap-settings", "allow-connect-imap-account", "allow-connect-gmail-account", "allow-refresh-connected-inbox", "allow-list-connected-folders", "allow-read-connected-folder", "allow-read-older-connected-messages", "allow-read-connected-message", "allow-download-connected-attachment", "allow-open-connected-attachment", "allow-send-connected-message", "allow-update-connected-message", "allow-update-connected-messages"]
+          "permissions": ["allow-load-connected-inbox", "allow-list-connected-accounts", "allow-switch-connected-account", "allow-discover-imap-settings", "allow-check-imap-settings", "allow-connect-imap-account", "allow-connect-gmail-account", "allow-refresh-connected-inbox", "allow-list-connected-folders", "allow-read-connected-folder", "allow-read-older-connected-messages", "allow-search-connected-messages", "allow-read-connected-message", "allow-download-connected-attachment", "allow-open-connected-attachment", "allow-send-connected-message", "allow-update-connected-message", "allow-update-connected-messages"]
         },
         {
           "identifier": "macos-titlebar",

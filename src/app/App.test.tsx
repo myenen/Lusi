@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { updateConnectedMessages, type MessageKey } from '../features/accounts/imap-api';
+import { updateConnectedMessages, type MessageKey, type MessageSearchRequest } from '../features/accounts/imap-api';
 import { App } from './App';
 
 const dialogPrototype = HTMLDialogElement.prototype;
@@ -275,7 +275,9 @@ const fixtureKey = { uidValidity: 20, uid: 17 };
 const fixtureHeader = { key: fixtureKey, sender: 'Sample sender', address: 'sender@example.test', subject: 'Inbox message', sentAt: null, unread: true, starred: false };
 
 function mockMailbox() {
-  const invoke = vi.fn(async (command: string, args: { folder?: string; accountId?: number }): Promise<unknown> => {
+  const invoke = vi.fn(async (command: string, args: {
+    folder?: string; accountId?: number; request?: MessageSearchRequest; event?: string; handler?: number;
+  }): Promise<unknown> => {
     switch (command) {
       case 'load_ui_preferences':
         return { systemLocale: 'en', preferences: { theme: 'light', themeId: 'default', language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 } };
@@ -298,6 +300,7 @@ function mockMailbox() {
         seen: true, seenError: null,
       };
       case 'send_connected_message':
+      case 'save_ui_preferences':
       case 'update_connected_message': return undefined;
       default: throw new Error('Unexpected Tauri command');
     }
@@ -307,7 +310,138 @@ function mockMailbox() {
   return invoke;
 }
 
+function mockMailEvents(invoke: ReturnType<typeof mockMailbox>) {
+  type Callback = (event: { payload: unknown }) => void;
+  const pending: Callback[] = [];
+  const listeners = new Map<string, Callback>();
+  const fallback = invoke.getMockImplementation()!;
+  invoke.mockImplementation(async (command, args) => {
+    if (command === 'plugin:event|listen' && args.event && args.handler !== undefined) {
+      listeners.set(args.event, pending[args.handler]);
+      return args.handler;
+    }
+    if (command === 'plugin:event|unlisten') return;
+    return fallback(command, args);
+  });
+  vi.stubGlobal('__TAURI_EVENT_PLUGIN_INTERNALS__', {
+    unregisterListener(event: string) { listeners.delete(event); },
+  });
+  vi.stubGlobal('__TAURI_INTERNALS__', {
+    invoke,
+    transformCallback(handler: Callback) { return pending.push(handler) - 1; },
+  });
+  return (event: string, payload: unknown) => listeners.get(event)?.({ payload });
+}
+
 describe('connected mailbox', () => {
+  it('opens the Inbox, compose and settings through native tray actions', async () => {
+    const receive = mockMailEvents(mockMailbox());
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sent' }));
+    await screen.findByRole('button', { name: /Sent message/ });
+    await act(async () => receive('desktop:menu-action', 'inbox'));
+    expect(await screen.findByRole('button', { name: /Inbox message/ })).toBeTruthy();
+
+    await act(async () => receive('desktop:menu-action', 'settings'));
+    const settings = await screen.findByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('button', { name: 'Close settings' }));
+    await act(async () => receive('desktop:menu-action', 'compose'));
+    expect(await screen.findByRole('dialog', { name: 'New message' })).toBeTruthy();
+  });
+
+  it('defaults to background sync on close and saves the opt-out choice', async () => {
+    const invoke = mockMailbox();
+    render(<App />);
+    await screen.findByRole('button', { name: /Inbox message/ });
+    const closePreference = within(openSettings()).getByRole<HTMLInputElement>('checkbox', {
+      name: 'Keep checking mail after closing the window',
+    });
+    expect(closePreference.checked).toBe(true);
+    await act(async () => fireEvent.click(closePreference));
+    expect(closePreference.checked).toBe(false);
+    expect(invoke).toHaveBeenCalledWith('save_ui_preferences', {
+      preferences: expect.objectContaining({ keepRunningOnClose: false }),
+    }, undefined);
+  });
+
+  it('reflects background changes for the active inbox without mixing accounts', async () => {
+    const receive = mockMailEvents(mockMailbox());
+    render(<App />);
+    await screen.findByRole('button', { name: /Inbox message/ });
+    const incoming = { ...fixtureHeader, subject: 'Background delivery', key: { ...fixtureKey, uid: 55 } };
+    await act(async () => receive('mail:inbox-changed', { accountId: 2, email: 'other@example.test', headers: [incoming], canSend: true }));
+    expect(screen.queryByText(incoming.subject)).toBeNull();
+    await act(async () => receive('mail:inbox-changed', { accountId: 1, email: 'mail@example.test', headers: [incoming], canSend: true }));
+    expect(screen.getByRole('button', { name: /Background delivery/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
+  });
+
+  it('opens a notification message outside the cached window in the correct account', async () => {
+    const invoke = mockMailbox();
+    const receive = mockMailEvents(invoke);
+    render(<App />);
+    await screen.findByRole('button', { name: /Inbox message/ });
+    const header = { ...fixtureHeader, subject: 'Message from notification', key: { uidValidity: 5, uid: 9 } };
+    await act(async () => receive('mail:notification-open', {
+      inbox: { accountId: 2, email: 'other@example.test', headers: [], canSend: true },
+      header,
+    }));
+    expect(await screen.findByRole('heading', { name: header.subject })).toBeTruthy();
+    expect(await screen.findByText('Inbox body')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', expect.objectContaining({
+      accountId: 2, folder: 'INBOX', key: header.key,
+    }), undefined);
+  });
+
+  it('hides notification details by default and disables the details setting when notifications are off', async () => {
+    mockMailbox();
+    render(<App />);
+    await screen.findByRole('button', { name: /Inbox message/ });
+    const settings = within(openSettings());
+    const enabled = settings.getByRole<HTMLInputElement>('checkbox', { name: 'Notify me about new mail' });
+    const details = settings.getByRole<HTMLInputElement>('checkbox', { name: 'Show sender and subject in notifications' });
+    expect(enabled.checked).toBe(true);
+    expect(details.checked).toBe(false);
+    fireEvent.click(enabled);
+    expect(details.disabled).toBe(true);
+  });
+  it('finds messages beyond the loaded inbox and pages remote results', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const first = { ...fixtureHeader, subject: 'Older invoice', key: { ...fixtureKey, uid: 10 } };
+    const second = { ...first, subject: 'Earliest invoice', key: { ...fixtureKey, uid: 2 } };
+    invoke.mockImplementation(async (command, args) => {
+      if (command !== 'search_connected_messages') return fallback(command, args);
+      return args.request?.cursor
+        ? { headers: [second], nextCursor: null }
+        : { headers: [first], nextCursor: first.key };
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByRole('searchbox'), { target: { value: 'invoice' } });
+    expect(await screen.findByRole('button', { name: /Older invoice/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more results' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Earliest invoice/ }));
+    expect(await screen.findByText('Inbox body')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('search_connected_messages', {
+      accountId: 1, folder: 'INBOX',
+      request: { query: 'invoice', unreadOnly: false, oldestFirst: false, cursor: first.key },
+    }, undefined);
+  });
+
+  it('keeps matching loaded senders visible when server search fails', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'search_connected_messages') throw 'network';
+      return fallback(command, args);
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByRole('searchbox'), { target: { value: 'sender@example.test' } });
+    expect(await screen.findByText(/Server search is unavailable/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();
+  });
+
   it('limits each bulk action request to 50 and retains confirmed updates if the next batch fails', async () => {
     const keys = Array.from({ length: 51 }, (_, index) => ({ uidValidity: 20, uid: index + 1 }));
     const invoke = vi.fn(async (_command: string, args: { keys: MessageKey[] }) => {
@@ -680,6 +814,30 @@ describe('connected mailbox', () => {
         replyThread: { inReplyTo: 'parent@example.test', references: ['first@example.test'] },
       }),
     }, undefined);
+  });
+
+  it('retains a draft through resizing and clears it only after confirming discard', async () => {
+    mockMailbox();
+    render(<App />);
+    const compose = await screen.findByRole('button', { name: 'Compose' });
+    fireEvent.click(compose);
+    const panel = screen.getByRole('dialog', { name: 'New message' });
+    const draft = within(panel);
+    fireEvent.change(draft.getByLabelText('Subject'), { target: { value: 'Keep for later' } });
+    fireEvent.click(draft.getByRole('button', { name: 'Expand composer' }));
+    expect(panel.getAttribute('data-layout')).toBe('expanded');
+    fireEvent.click(draft.getByRole('button', { name: 'Minimize composer' }));
+    expect(draft.queryByRole('textbox', { name: 'Subject' })).toBeNull();
+    fireEvent.click(compose);
+    expect(draft.getByRole<HTMLInputElement>('textbox', { name: 'Subject' }).value).toBe('Keep for later');
+    fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
+    fireEvent.click(draft.getByRole('button', { name: 'Keep draft' }));
+    expect(draft.getByLabelText<HTMLInputElement>('Subject').value).toBe('Keep for later');
+    fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
+    fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(compose);
+    expect(screen.getByLabelText<HTMLInputElement>('Subject').value).toBe('');
   });
 
   it('edits HTML source, restores the rich body and submits HTML', async () => {

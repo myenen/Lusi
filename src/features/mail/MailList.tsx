@@ -1,6 +1,7 @@
 import { Archive, Inbox, ListChecks, Mail, MailOpen, Menu, Paperclip, RefreshCw, RotateCcw, Search, Star, Trash2 } from 'lucide-react';
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
+import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton, SegmentedFilter, Toolbar, type Filter } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
 import { SelectBox } from '../../components/ui/SelectBox';
@@ -11,7 +12,7 @@ import type { MessageRow } from './connected-mail';
 export function MailList({
   title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen,
   oldestFirst, onSort, onSearch, onFilter, onSelect, onToggleFolders, divider, busy, refreshing, onRefresh, status,
-  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older,
+  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older, searchStatus,
 }: MessageActionAvailability & {
   title: string;
   messages: MessageRow[];
@@ -36,7 +37,8 @@ export function MailList({
   refreshing: boolean;
   onRefresh: () => void;
   status?: ReactNode;
-  older?: { cursor: string; loading: boolean; error?: string; onLoad: () => void };
+  searchStatus?: ReactNode;
+  older?: { cursor: string; loading: boolean; error?: string; onLoad: () => void; searchResults?: boolean };
 }) {
   const labels = useLabels();
   const selectionButton = useRef<HTMLButtonElement>(null);
@@ -69,15 +71,15 @@ export function MailList({
   useLayoutEffect(() => {
     scrollAnchor.current = undefined;
     if (list.current) list.current.scrollTop = 0;
-  }, [oldestFirst]);
+  }, [oldestFirst, search]);
 
   useLayoutEffect(() => {
     const anchor = scrollAnchor.current;
     if (!anchor || anchor.cursor === cursor || !list.current) return;
-    const insertedAbove = oldestFirst ? list.current.scrollHeight - anchor.height : 0;
+    const insertedAbove = oldestFirst && !older?.searchResults ? list.current.scrollHeight - anchor.height : 0;
     list.current.scrollTop = anchor.top + insertedAbove;
     scrollAnchor.current = undefined;
-  }, [cursor, oldestFirst]);
+  }, [cursor, oldestFirst, older?.searchResults]);
 
   const selectedMessages = messages.filter(({ id }) => selection?.has(id));
   const allSelected = messages.length > 0 && selectedMessages.length === messages.length;
@@ -92,12 +94,13 @@ export function MailList({
   const pagination = older && <li ref={loadMarker} className="list-pagination">
     {older.error && <p role="alert">{older.error}</p>}
     {older.loading
-      ? <p role="status">{labels.loadingOlderMessages}</p>
+      ? <p role="status">{older.searchResults ? labels.searchingMessages : labels.loadingOlderMessages}</p>
       : <button type="button" className="text-button" disabled={busy} onClick={loadMore}>
-        {older.error ? labels.retryOlderMessages : labels.loadOlderMessages}
+        {older.searchResults ? (older.error ? labels.retrySearch : labels.moreSearchResults)
+          : (older.error ? labels.retryOlderMessages : labels.loadOlderMessages)}
       </button>}
   </li>;
-  const emptyList = !busy && !status && <li className="list-empty">
+  const emptyList = !busy && !status && !searchStatus && !older?.searchResults && <li className="list-empty">
     <Inbox size={26} aria-hidden="true" />
     <p role="status">{labels.noMessages}</p>
     {(search || filter !== 'all') && <button type="button" className="text-button" onClick={() => { onSearch(''); onFilter('all'); }}>{labels.clearFilters}</button>}
@@ -119,7 +122,7 @@ export function MailList({
         </div>
         <label className="search">
           <Search size={17} aria-hidden="true" />
-          <input ref={searchRef} type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder={labels.searchPlaceholder} aria-label={labels.searchMessages} />
+          <input ref={searchRef} type="search" value={search} maxLength={256} onChange={(event) => onSearch(event.target.value)} placeholder={labels.searchPlaceholder} aria-label={labels.searchMessages} />
         </label>
         <SegmentedFilter value={filter} onChange={onFilter} />
         <div className="list-options">
@@ -150,10 +153,11 @@ export function MailList({
           </Toolbar>
         </div>}
         {status}
+        {searchStatus}
       </header>
       <ScrollArea className="mail-list-scroll" label={labels.messages} viewportRef={list}>
         <ul className="message-list">
-          {oldestFirst && pagination}
+          {oldestFirst && !older?.searchResults && pagination}
           {messages.map((message) => {
             const content = <>
                 {message.unread && <span className="sr-only">{labels.filters.unread}</span>}
@@ -175,10 +179,10 @@ export function MailList({
             return <li key={message.id} className="message-list-item">
               {selection ? (
                 <label className="message-row message-row-selectable" data-unread={message.unread} data-bulk-selected={selection.has(message.id)}>
-                  <input type="checkbox" aria-label={labels.selectMessage(message.subject)} disabled={busy}
-                    checked={selection.has(message.id)} onChange={(event) => {
+                  <Checkbox aria-label={labels.selectMessage(message.subject)} disabled={busy}
+                    checked={selection.has(message.id)} onCheckedChange={(checked) => {
                       const next = new Set(selection);
-                      if (event.target.checked) next.add(message.id);
+                      if (checked) next.add(message.id);
                       else next.delete(message.id);
                       onSelectionChange(next);
                     }} />
@@ -196,7 +200,7 @@ export function MailList({
             </li>;
           })}
           {!messages.length && emptyList}
-          {!oldestFirst && pagination}
+          {(!oldestFirst || older?.searchResults) && pagination}
         </ul>
       </ScrollArea>
       {divider}

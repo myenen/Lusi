@@ -12,6 +12,9 @@ export interface Preferences {
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   listWidth: number;
+  mailNotifications: boolean;
+  notificationDetails: boolean;
+  keepRunningOnClose: boolean;
 }
 
 export const paneLimits = {
@@ -19,7 +22,10 @@ export const paneLimits = {
   listWidth: { min: 290, max: 444 },
 };
 
-const defaults: Preferences = { theme: 'light', themeId: defaultThemeId, language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380 };
+const defaults: Preferences = {
+  theme: 'light', themeId: defaultThemeId, language: 'system', sidebarCollapsed: false, sidebarWidth: 222, listWidth: 380,
+  mailNotifications: true, notificationDetails: false, keepRunningOnClose: true,
+};
 
 interface LoadedPreferences { preferences: Preferences; systemLocale: string | null; }
 type PreferenceError = 'load' | 'save';
@@ -45,8 +51,8 @@ export function useUiPreferences() {
     let active = true;
     invoke<LoadedPreferences>('load_ui_preferences').then(({ preferences: stored, systemLocale }) => {
       if (!active) return;
-      current.current = stored;
-      setPreferences(stored);
+      current.current = { ...defaults, ...stored };
+      setPreferences(current.current);
       if (systemLocale) setSystemLocale(systemLocale);
     }).catch(() => {
       if (active) setError('load');

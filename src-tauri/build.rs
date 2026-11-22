@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "list_connected_folders",
         "read_connected_folder",
         "read_older_connected_messages",
+        "search_connected_messages",
         "read_connected_message",
         "download_connected_attachment",
         "open_connected_attachment",

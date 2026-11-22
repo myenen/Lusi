@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export interface ImapAccount {
   email: string;
@@ -37,6 +38,18 @@ export interface ImapHeader {
 export interface OlderMessages {
   headers: ImapHeader[];
   nextBefore: MessageKey | null;
+}
+
+export interface MessageSearchRequest {
+  query: string;
+  unreadOnly: boolean;
+  oldestFirst: boolean;
+  cursor?: MessageKey;
+}
+
+export interface MessageSearchPage {
+  headers: ImapHeader[];
+  nextCursor: MessageKey | null;
 }
 
 export interface ConnectedInbox {
@@ -114,10 +127,20 @@ export const connectImapAccount = (account: ImapAccount, outgoing: SmtpSettings,
 export const connectGmailAccount = (email: string, reconnectAccountId?: number) =>
   invoke<ConnectedInbox>('connect_gmail_account', { email, ...(reconnectAccountId !== undefined && { reconnectAccountId }) });
 export const refreshConnectedInbox = (accountId: number) => invoke<ConnectedInbox>('refresh_connected_inbox', { accountId });
+export const onInboxSync = (handler: (inbox: ConnectedInbox) => void) =>
+  listen<ConnectedInbox>('mail:inbox-changed', ({ payload }) => handler(payload), { target: 'main' });
+export interface NotificationOpen {
+  inbox: ConnectedInbox;
+  header: ImapHeader | null;
+}
+export const onNotificationOpen = (handler: (target: NotificationOpen) => void) =>
+  listen<NotificationOpen>('mail:notification-open', ({ payload }) => handler(payload), { target: 'main' });
 export const listConnectedFolders = (accountId: number) => invoke<MailFolder[]>('list_connected_folders', { accountId });
 export const readConnectedFolder = (accountId: number, folder: string) => invoke<ImapHeader[]>('read_connected_folder', { accountId, folder });
 export const readOlderConnectedMessages = (accountId: number, folder: string, before: MessageKey) =>
   invoke<OlderMessages>('read_older_connected_messages', { accountId, folder, before });
+export const searchConnectedMessages = (accountId: number, folder: string, request: MessageSearchRequest) =>
+  invoke<MessageSearchPage>('search_connected_messages', { accountId, folder, request });
 export const readConnectedMessage = (accountId: number, folder: string, key: MessageKey, unread: boolean) =>
   invoke<OpenedMessage>('read_connected_message', { accountId, folder, key, unread });
 export const downloadConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>

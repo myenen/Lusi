@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { useLabels } from '../../app/i18n';
+import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton } from '../../components/ui/Controls';
 import { SelectBox } from '../../components/ui/SelectBox';
 import { checkImapSettings, connectGmailAccount, connectImapAccount, discoverImapSettings, imapErrorMessage, type ConnectedInbox, type DiscoveredImap } from './imap-api';
@@ -217,8 +218,7 @@ export function AccountSetup({ hasMacTitleBar, desktop, onConnected, onClose }: 
           </fieldset>}
           {step === 'password' && <>
             {discovery?.needsConfirmation && <label className="account-setup-confirmation">
-              <input type="checkbox" required checked={confirmed} disabled={busy}
-                onChange={(event) => setConfirmed(event.target.checked)} />
+              <Checkbox required checked={confirmed} disabled={busy} onCheckedChange={setConfirmed} />
               <span>{labels.confirmDiscoveredServer}</span>
             </label>}
             <label>{labels.password}

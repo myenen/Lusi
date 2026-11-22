@@ -1,5 +1,5 @@
-import { FileText, Paperclip, Send, X } from 'lucide-react';
-import { Fragment, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { ChevronUp, FileText, Maximize2, Minimize2, Minus, Paperclip, Send, Trash2, Type, X } from 'lucide-react';
+import { Fragment, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type Ref } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import { imapErrorMessage, sendConnectedMessage, type ReplyThread } from '../accounts/imap-api';
@@ -32,12 +32,18 @@ async function encodeFile(file: File) {
   return { name: file.name, data: btoa(chunks.join('')) };
 }
 
-export function Composer({ accountId, draft, mode, onChange, onClose, onSendStart, onSent }: {
+export interface ComposerHandle {
+  reveal: () => void;
+}
+
+export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDiscard, onSendStart, onSent }: {
+  ref?: Ref<ComposerHandle>;
   accountId: number;
   draft: Draft;
   mode: ComposeMode;
   onChange: (draft: Draft) => void;
   onClose: () => void;
+  onDiscard: () => void;
   onSendStart: () => void;
   onSent: () => void;
 }) {
@@ -45,16 +51,22 @@ export function Composer({ accountId, draft, mode, onChange, onClose, onSendStar
   const dialog = useRef<HTMLDialogElement>(null);
   const toInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const minimizeButton = useRef<HTMLButtonElement>(null);
+  const cancelDiscardButton = useRef<HTMLButtonElement>(null);
+  const discardButton = useRef<HTMLButtonElement>(null);
   const pending = useRef(false);
   const fieldId = useId();
   const [showCopies, setShowCopies] = useState(Boolean(draft.cc || draft.bcc));
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string>();
+  const [layout, setLayout] = useState<'docked' | 'expanded'>('docked');
+  const [minimized, setMinimized] = useState(false);
+  const [showFormatting, setShowFormatting] = useState(true);
+  const [discarding, setDiscarding] = useState(false);
   const fields = showCopies ? ['to', 'cc', 'bcc', 'subject'] as const : ['to', 'subject'] as const;
 
   useEffect(() => {
     const panel = dialog.current;
-    panel?.showModal();
     if (mode === 'reply' || mode === 'replyAll') {
       const body = panel?.querySelector<HTMLElement>('[data-compose-body]');
       body?.focus();
@@ -70,8 +82,23 @@ export function Composer({ accountId, draft, mode, onChange, onClose, onSendStar
     } else {
       toInput.current?.focus();
     }
-    return () => panel?.close();
   }, [mode]);
+
+  useLayoutEffect(() => {
+    if (discarding) cancelDiscardButton.current?.focus();
+  }, [discarding]);
+
+  useImperativeHandle(ref, () => ({
+    reveal() {
+      setMinimized(false);
+      minimizeButton.current?.focus();
+    },
+  }), []);
+
+  function toggleMinimized() {
+    setMinimized(!minimized);
+    minimizeButton.current?.focus();
+  }
 
   function change<Key extends keyof Draft>(field: Key, value: Draft[Key]) {
     setFailure(undefined);
@@ -108,15 +135,30 @@ export function Composer({ accountId, draft, mode, onChange, onClose, onSendStar
     }
   }
 
-  return <dialog ref={dialog} className="composer" aria-labelledby={fieldId} onCancel={(event) => {
+  return <dialog open ref={dialog} className="composer mail-composer" data-layout={layout}
+    data-minimized={minimized} aria-labelledby={fieldId} onKeyDown={(event) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || pending.current) return;
     event.preventDefault();
-    if (!pending.current) onClose();
+    if (discarding) {
+      setDiscarding(false);
+      requestAnimationFrame(() => discardButton.current?.focus());
+    } else {
+      onClose();
+    }
   }}>
     <header className="composer-header">
-      <h2 id={fieldId}>{labels.composeTitles[mode]}</h2>
-      <IconButton label={labels.closeComposer} icon={X} disabled={sending} onClick={onClose} />
+      <h2 id={fieldId}>{minimized && draft.subject.trim() ? draft.subject : labels.composeTitles[mode]}</h2>
+      <div className="composer-window-actions">
+        <IconButton ref={minimizeButton} label={minimized ? labels.restoreComposer : labels.minimizeComposer}
+          icon={minimized ? ChevronUp : Minus} aria-expanded={!minimized} aria-controls={`${fieldId}-form`}
+          disabled={sending} onClick={toggleMinimized} />
+        {!minimized && <IconButton label={layout === 'expanded' ? labels.dockComposer : labels.expandComposer}
+          icon={layout === 'expanded' ? Minimize2 : Maximize2} aria-pressed={layout === 'expanded'}
+          onClick={() => setLayout(layout === 'expanded' ? 'docked' : 'expanded')} />}
+        <IconButton label={labels.closeComposer} icon={X} disabled={sending} onClick={onClose} />
+      </div>
     </header>
-    <form onSubmit={send}>
+    <form id={`${fieldId}-form`} hidden={minimized} onSubmit={send}>
       <fieldset className="composer-fields" disabled={sending}>
         <div className="composer-headers">{fields.map((field) => {
           const id = `${fieldId}-${field}`;
@@ -131,7 +173,7 @@ export function Composer({ accountId, draft, mode, onChange, onClose, onSendStar
             </div> : input}
           </Fragment>;
         })}</div>
-        <ComposerEditor body={draft.body} editor={draft.editor} disabled={sending}
+        <ComposerEditor body={draft.body} editor={draft.editor} disabled={sending} showFormatting={showFormatting}
           onChange={(editor) => change('editor', editor)} />
         {draft.files.length > 0 && <ul className="composer-attachments" aria-label={labels.attachments}>
           {draft.files.map((file, index) => <li className="composer-attachment" key={`${index}-${file.name}`}>
@@ -156,13 +198,22 @@ export function Composer({ accountId, draft, mode, onChange, onClose, onSendStar
             change('files', files);
           }
         }} />
-        <button type="button" className="composer-attach" disabled={sending} onClick={() => fileInput.current?.click()}>
-          <Paperclip size={16} aria-hidden="true" />{labels.attachFiles}
-        </button>
-        {sending && <small role="status">{labels.sendingMessage}</small>}
         <button className="compose-button" type="submit" disabled={sending || failure === 'sendUncertain'}>
           <Send size={16} aria-hidden="true" />{labels.send}
         </button>
+        <IconButton label={labels.editorFormatting} icon={Type} aria-pressed={showFormatting}
+          disabled={sending} onClick={() => setShowFormatting(!showFormatting)} />
+        <IconButton className="composer-attach" label={labels.attachFiles} icon={Paperclip}
+          disabled={sending} onClick={() => fileInput.current?.click()} />
+        {sending && <small role="status">{labels.sendingMessage}</small>}
+        {discarding ? <div className="composer-discard-confirmation" role="group" aria-label={labels.discardDraft}>
+          <button ref={cancelDiscardButton} type="button" className="text-button" onClick={() => {
+            setDiscarding(false);
+            requestAnimationFrame(() => discardButton.current?.focus());
+          }}>{labels.cancelDiscard}</button>
+          <button type="button" className="text-button" disabled={sending} onClick={onDiscard}>{labels.discardDraft}</button>
+        </div> : <IconButton ref={discardButton} className="composer-discard" label={labels.discardDraft} icon={Trash2}
+          disabled={sending} onClick={() => setDiscarding(true)} />}
       </footer>
     </form>
   </dialog>;

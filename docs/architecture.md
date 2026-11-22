@@ -6,6 +6,8 @@ The workspace fills the desktop content area. On macOS, the native title bar is 
 
 The React shell in `src/app/` coordinates folder navigation, search, unread filters, selection, and appearance. It loads the connected Inbox snapshot from the desktop core and opens setup in light Liquid Glass when the account store is empty. The browser preview shows account setup. Fresh preferences default to light Liquid Glass.
 
+The shared `Checkbox` in `src/components/ui/` combines a native input with a themed visual. Notification preferences, message selection, and account setup use this primitive. It retains keyboard and form behavior, and displays the native control in forced-colors mode.
+
 The typed catalog in `src/app/i18n.ts` contains English and Turkish interface text. The desktop reads the preferred OS locale when it loads preferences. The browser preview uses the browser language. Unsupported languages fall back to English.
 
 The theme registry in `src/app/themes.ts` resolves saved theme IDs and follows OS appearance in system mode. Theme stylesheets set colors, radii, spacing, surface effects, and motion through CSS variables. Scoped component rules can refine layout within a theme. Rust stores the theme ID separately from the system, light, or dark preference.
@@ -35,3 +37,21 @@ The reader parses MIME in Rust and uses an HTML allowlist and a limited set of i
 The Rust `MessageSummarizer` ranks sentences from sanitized HTML or plain text using recurring terms and English/Turkish signals for requests, decisions, and explicit deadlines. It skips common sign-offs and quoted replies, suppresses repetitive points, and returns up to three original excerpts. The summarizer performs no network requests and does not store summaries. A future local model can produce the same structured response without changing the reader.
 
 The composer keeps drafts in memory and offers rich-text and HTML source modes. The editor sanitizes pasted HTML and source markup before rendering it. Rust applies its own allowlist before sending and derives the plain-text alternative from the same sanitized HTML. The resulting MIME alternative stays together inside the mixed part when attachments are present.
+
+The compose panel docks to the bottom corner and can expand or collapse without remounting the editor. Closing retains the session draft. The discard control confirms before clearing it. The formatting tray edits fonts, text size, color, alignment, lists, and links. The outgoing markup allowlist accepts these text styles and the selected font attributes.
+
+### Inbox synchronization
+
+The Rust worker monitors the active account independently of the window. Startup and manual refresh use the same reconciliation path as the worker. Reconciliation reads the UIDs and flags of the latest Inbox window, fetches headers only for unknown UIDs, and atomically replaces the saved window when it changes. A new UIDVALIDITY starts a new generation. Incomplete responses leave the previous snapshot available. The unread badge uses the server count, and the worker emits Inbox snapshots only to the main window for the active account.
+
+A read-only IMAP IDLE connection wakes reconciliation on changes. The worker bounds each IDLE session, uses two-minute polling when IDLE is unavailable, and backs off after failures up to ten minutes. It releases the idle connection when the active account changes. The mail operation lock is used for reconciliation and is free during IDLE and backoff waits.
+
+### New mail notifications
+
+Reconciliation persists the active Inbox UIDVALIDITY and highest observed UID per account in the same transaction as the header snapshot. The first successful sync and any UIDVALIDITY change establish a baseline. Later syncs deliver newly observed unread messages within the reconciliation window, and saving the cursor before delivery prevents duplicates across restarts. The cursor advances when notifications are disabled, so enabling alerts does not replay past mail.
+
+Rust uses the Tauri notification plugin and reads the local privacy preference before including sender and subject. A notification carries an internal account and message key. On a tap, Rust brings the main window forward, activates the account if needed and sends the reader a targeted event. An older header can be fetched by UID without marking the message as read before the reader opens it. Windows delivers tap events from the on-screen banner.
+
+### Desktop lifecycle
+
+The Rust tray controller hides the main window when it receives a close request and the saved preference allows background operation. The hidden window retains its current view and in-memory drafts, and the existing sync worker continues running. The close behavior requires a registered tray. If tray initialization fails, the window closes normally. Notification taps, macOS Dock reopen events, and tray shortcuts share the window activation path. The tray's manual check wakes the existing sync worker. **Quit Lusi** exits the process and ends synchronization.
