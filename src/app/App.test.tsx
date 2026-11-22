@@ -680,7 +680,7 @@ describe('connected mailbox', () => {
       })
       : fallback(command, args));
     render(<App />);
-    const refresh = await screen.findByRole<HTMLButtonElement>('button', { name: 'Refresh messages' });
+    const refresh = await screen.findByRole<HTMLButtonElement>('button', { name: 'Refresh messages', busy: false });
     expect(refresh.getAttribute('aria-busy')).toBe('false');
     fireEvent.click(refresh);
     expect(refresh.getAttribute('aria-busy')).toBe('true');
