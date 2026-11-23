@@ -2,10 +2,11 @@ import { isTauri } from '@tauri-apps/api/core';
 import { Settings } from 'lucide-react';
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from 'react';
 import { IconButton, type Filter } from '../components/ui/Controls';
+import { TooltipProvider } from '../components/ui/Tooltip';
 import { AccountSetup } from '../features/accounts/AccountSetup';
 import {
   imapErrorMessage, inboxFolder, listConnectedAccounts, listConnectedFolders, loadConnectedInbox, onInboxSync, onNotificationOpen, onNotificationReady, readConnectedFolder,
-  takeNotificationOpen,
+  onScheduledChanged, takeNotificationOpen,
   refreshConnectedInbox, switchConnectedAccount, updateConnectedMessage, updateConnectedMessages,
   type ConnectedAccount, type ConnectedInbox, type ImapHeader, type MessageAction, type MessageKey, type NotificationOpen, type OpenedMessage,
 } from '../features/accounts/imap-api';
@@ -14,6 +15,7 @@ import { ConnectedMessageBody } from '../features/mail/ConnectedMessageBody';
 import { connectedMessageId, connectedMessageRows, folderDisplayName } from '../features/mail/connected-mail';
 import { MailList } from '../features/mail/MailList';
 import { MessageReader } from '../features/mail/MessageReader';
+import { ScheduledMail } from '../features/mail/ScheduledMail';
 import { Sidebar } from '../features/mail/Sidebar';
 import { SidebarAccount } from '../features/mail/SidebarAccount';
 import { useMailSounds } from '../features/mail/send-sound';
@@ -40,6 +42,7 @@ export function App() {
   const [accountLoadFailed, setAccountLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [notification, setNotification] = useState<NotificationOpen>();
+  const [scheduledOpen, setScheduledOpen] = useState(false);
   const openingNotification = useRef(false);
   const ui = useUiPreferences();
   const { preferences, locale, error, ready } = ui;
@@ -73,6 +76,7 @@ export function App() {
       openingNotification.current = true;
       setAccountLoadFailed(false);
       setNotification(target);
+      setScheduledOpen(false);
       setStartupAccountId(undefined);
       setInbox(target.inbox);
     }
@@ -92,7 +96,7 @@ export function App() {
   }, [desktop]);
 
   return (
-    <LocaleContext value={locale}>
+    <TooltipProvider><LocaleContext value={locale}>
       <div className="workspace" data-theme={appearance} data-theme-id={themeId} data-color-scheme={colorScheme}
         data-window-chrome={hasMacTitleBar ? 'macos' : undefined}>
         {ready && accountLoadFailed && <main className="account-setup">
@@ -108,6 +112,7 @@ export function App() {
         {ready && inbox !== undefined && (inbox
           ? <MailboxWorkspace key={inbox.accountId} ui={ui} themeId={themeId} colorScheme={colorScheme}
             inbox={inbox} notification={notification?.inbox.accountId === inbox.accountId ? notification : undefined}
+            scheduledOpen={scheduledOpen} onScheduledViewChange={setScheduledOpen}
             syncOnOpen={startupAccountId === inbox.accountId} onAccountChanged={(updated) => {
               setNotification(undefined);
               setStartupAccountId(undefined);
@@ -123,17 +128,19 @@ export function App() {
             onConnected={setInbox} />)}
         {error && <p className="preference-error" role="status">{labels.preferenceErrors[error]}</p>}
       </div>
-    </LocaleContext>
+    </LocaleContext></TooltipProvider>
   );
 }
 
-function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncOnOpen, onAccountChanged, onRefresh, drafts, setDrafts }: {
+function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncOnOpen, onAccountChanged, onRefresh, drafts, setDrafts, scheduledOpen, onScheduledViewChange }: {
   ui: ReturnType<typeof useUiPreferences>;
   themeId: string;
   colorScheme: 'light' | 'dark';
   inbox: ConnectedInbox;
   notification?: NotificationOpen;
   syncOnOpen: boolean;
+  scheduledOpen: boolean;
+  onScheduledViewChange: (open: boolean) => void;
   onAccountChanged: (inbox: ConnectedInbox) => void;
   onRefresh: Dispatch<SetStateAction<ConnectedInbox>>;
   drafts: Record<string, Draft>;
@@ -172,7 +179,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composer, setComposer] = useState<{ id: string; mode: ComposeMode }>();
   const [opened, setOpened] = useState<{ id: string; message: OpenedMessage }>();
-  const [notice, setNotice] = useState<'sent' | 'sentWithoutCopy' | 'archive' | 'trash' | 'restore' | 'notificationMissing' | { count: number } | { switchError: unknown }>();
+  const [notice, setNotice] = useState<'sent' | 'sentWithoutCopy' | 'scheduled' | 'archive' | 'trash' | 'restore' | 'notificationMissing' | { count: number } | { switchError: unknown }>();
   const [flight, setFlight] = useState(0);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<{ folder: string; source: 'list' | 'reader'; error: unknown }>();
@@ -219,7 +226,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const openedMessage = opened?.id === messageId ? opened.message : undefined;
   const canRespond = inbox.canSend && Boolean(openedMessage?.reply?.to.length);
   const canForward = inbox.canSend && Boolean(openedMessage);
-  const visiblePane = selected ? mobilePane : 'list';
+  const visiblePane = scheduledOpen || selected ? mobilePane : 'list';
   const currentFolder = folders.find(({ id }) => id === folder);
   const sentRefresh = currentFolder?.kind === 'sent' ? sentRevision : 0;
   const hasOtherFolder = (kind: 'archive' | 'trash') => folders.some((entry) => entry.kind === kind && entry.id !== folder);
@@ -230,6 +237,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const noticeText = typeof notice === 'object'
     ? 'count' in notice ? labels.bulkUpdated(notice.count) : imapErrorMessage(notice.switchError, labels.imapErrors) :
     notice === 'sent' ? labels.messageSent : notice === 'sentWithoutCopy' ? labels.sentWithoutCopy :
+    notice === 'scheduled' ? labels.messageScheduled :
     notice === 'archive' ? labels.messageArchived :
     notice === 'trash' ? labels.messageTrashed : notice === 'restore' ? labels.messageRestored :
     notice === 'notificationMissing' ? labels.notificationMissing : undefined;
@@ -264,6 +272,18 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     });
     return () => { current = false; };
   }, [accountId, foldersAttempt]);
+
+  useEffect(() => {
+    let active = true;
+    const registration = onScheduledChanged((sentAccountId) => {
+      if (active && sentAccountId === accountId) setSentRevision((revision) => revision + 1);
+    });
+    void registration.catch(() => {});
+    return () => {
+      active = false;
+      void registration.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [accountId]);
 
   const applyFolderHeaders = useEffectEvent((source: string, headers: ImapHeader[]) => {
     older.reset(source);
@@ -465,6 +485,17 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     });
   }
 
+  function completeComposer() {
+    if (!composer) return;
+    setDrafts((current) => {
+      if (current[composer.id] !== drafts[composer.id]) return current;
+      const next = { ...current };
+      delete next[composer.id];
+      return next;
+    });
+    setComposer((current) => current === composer ? undefined : current);
+  }
+
   function respond(mode: ResponseMode, trigger: HTMLButtonElement) {
     if (composer || !selected || !selectedHeader || !openedMessage || (mode === 'forward' ? !canForward : !canRespond)) return;
     const id = JSON.stringify([messageId, mode]);
@@ -523,11 +554,11 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
 
 
   useEffect(() => {
-    if (!messageTrigger.current || !window.matchMedia?.('(max-width: 46rem)').matches) return;
+    if (scheduledOpen || !messageTrigger.current || !window.matchMedia?.('(max-width: 46rem)').matches) return;
     if (visiblePane === 'reader') readerHeading.current?.focus();
     else if (messageTrigger.current.isConnected) messageTrigger.current.focus();
     else searchInput.current?.focus();
-  }, [visiblePane]);
+  }, [scheduledOpen, visiblePane]);
 
   useEffect(() => {
     if (!showFolders) return;
@@ -618,6 +649,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   }
 
   function chooseFolder(next: string) {
+    onScheduledViewChange(false);
     if (next !== folder) {
       older.reset();
       setActionError(undefined);
@@ -644,68 +676,77 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
         {showFolders && <div className="drawer-backdrop" onClick={closeFolders} />}
         <Sidebar folder={folder} folders={folders} inboxUnread={inbox.headers.filter(({ unread }) => unread).length}
           open={showFolders} collapsed={preferences.sidebarCollapsed} account={
-            <SidebarAccount accountId={accountId} email={inbox.email} accounts={savedAccounts}
+            <SidebarAccount tooltip={preferences.sidebarCollapsed && !showFolders} accountId={accountId} email={inbox.email} accounts={savedAccounts}
               disabled={quickSwitching || actionBusy} onSwitch={(id) => void quickSwitchAccount(id)} />
           }
           onToggle={() => update({ sidebarCollapsed: !preferences.sidebarCollapsed })}
           onClose={closeFolders} onSelect={chooseFolder}
+          scheduledOpen={scheduledOpen} onOpenScheduled={() => {
+            onScheduledViewChange(true);
+            setMobilePane('list');
+            if (showFolders) closeFolders();
+          }}
           canSend={inbox.canSend} onCompose={startCompose}
           status={foldersLoading ? <p className="mailbox-status sidebar-copy" role="status">{labels.connectedInbox.loadingFolders}</p> :
             folderError !== undefined && <p className="mailbox-status sidebar-copy" role="alert">{imapErrorMessage(folderError, labels.imapErrors)}</p>}
-          appearance={<ThemeSelect theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={false} />}
+          appearance={<ThemeSelect tooltip={preferences.sidebarCollapsed && !showFolders} theme={preferences.theme} onChange={(theme) => update({ theme })} disabled={false} />}
           divider={<PaneDivider pane="sidebarWidth" width={preferences.sidebarWidth} disabled={false} onResize={(sidebarWidth, save) => update({ sidebarWidth }, save)} />}
         />
-        <MailList key={`list:${folder}`} title={currentFolder ? folderDisplayName(currentFolder, labels) : folder} messages={messages} selectedId={selected?.id}
-          search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
-          oldestFirst={oldestFirst} onSort={setOldestFirst}
-          onSearch={(value) => { setQuery(value); if (selection) setSelection(new Set()); }}
-          onFilter={(value) => { setFilter(value); if (value !== filter && selection) setSelection(new Set()); }}
-          selection={selection} onSelectionChange={setSelection} onBulkAction={(action) => void handleAction(action, 'list')}
-          onToggleFolders={() => setShowFolders(!showFolders)}
-          onSelect={(id, trigger) => {
-            messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader');
-          }}
-          canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
-          onAction={(id, action) => {
-            const header = headers.find(({ key }) => connectedMessageId(key) === id);
-            if (header) void handleAction(action, 'list', header.key);
-          }}
-          busy={busy || actionBusy} refreshing={isInbox ? startupSyncing || inboxRefreshing : folderRefreshing} onRefresh={refresh}
-          older={searchText ? (search.nextCursor ? {
-            cursor: connectedMessageId(search.nextCursor), loading: Boolean(search.loadingMore),
-            onLoad: () => { if (!pendingAction.current) void search.loadMore(); },
-            error: search.error === undefined ? undefined : imapErrorMessage(search.error, labels.imapErrors),
-            searchResults: true,
-          } : undefined) : older.cursor && !(isInbox && startupSyncing) && failure === undefined ? {
-            cursor: connectedMessageId(older.cursor), loading: older.loading, onLoad: () => { if (!busy && !pendingAction.current) void older.load(); },
-            error: older.error === undefined ? undefined : imapErrorMessage(older.error, labels.imapErrors),
-          } : undefined}
-          searchStatus={search.pending ? <p className="mailbox-status" role="status">{labels.searchingMessages}</p> :
-            searchText && search.error !== undefined && !search.headers ? <div className="mailbox-status" role="status">
-              {labels.searchUnavailable} <button type="button" className="text-button" onClick={search.retry}>{labels.retrySearch}</button>
-            </div> : undefined}
-          status={busy ? <p className="mailbox-status" role="status">{labels.connectedInbox.refreshing}</p> :
-            failure !== undefined ? <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p> :
-              actionError?.folder === folder && actionError.source === 'list' &&
-                <p className="account-setup-error" role="alert">{imapErrorMessage(actionError.error, labels.imapErrors)}</p>}
-          divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={false} onResize={(listWidth, save) => update({ listWidth }, save)} />}
-        />
-        <MessageReader key={`reader:${folder}`} message={selected} opened={openedMessage} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
-          onRespond={respond} canRespond={canRespond} canForward={canForward}
-          onAction={(action) => { if (selectedHeader) void handleAction(action, 'reader', selectedHeader.key); }} actionBusy={actionBusy || busy}
-          actionError={actionError?.folder === folder && actionError.source === 'reader' ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
-          canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
-          body={selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`} accountId={accountId} folder={folder} messageKey={selectedHeader.key}
-            unread={selectedHeader.unread} themeId={themeId} colorScheme={colorScheme}
-            onOpened={(message) => {
-              setOpened({ id: messageId, message });
-              if (message.attachments?.length && !selectedHeader.hasAttachments) {
-                patchHeaders(folder, (current) => current.map((header) => connectedMessageId(header.key) === selected?.id
-                  ? { ...header, hasAttachments: true } : header));
-              }
+        {scheduledOpen ? <ScheduledMail foldersOpen={showFolders} folderToggleRef={folderToggle} themeId={themeId} colorScheme={colorScheme}
+          onPaneChange={setMobilePane} onToggleFolders={() => setShowFolders(!showFolders)}
+          divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={false} onResize={(listWidth, save) => update({ listWidth }, save)} />} /> : <>
+          <MailList key={`list:${folder}`} title={currentFolder ? folderDisplayName(currentFolder, labels) : folder} messages={messages} selectedId={selected?.id}
+            search={query} filter={filter} searchRef={searchInput} folderToggleRef={folderToggle} foldersOpen={showFolders}
+            oldestFirst={oldestFirst} onSort={setOldestFirst}
+            onSearch={(value) => { setQuery(value); if (selection) setSelection(new Set()); }}
+            onFilter={(value) => { setFilter(value); if (value !== filter && selection) setSelection(new Set()); }}
+            selection={selection} onSelectionChange={setSelection} onBulkAction={(action) => void handleAction(action, 'list')}
+            onToggleFolders={() => setShowFolders(!showFolders)}
+            onSelect={(id, trigger) => {
+              messageTrigger.current = trigger; setSelectedId(id); setMobilePane('reader');
             }}
-            onSeen={(source, key) => applyHeaderActions(source, [key], 'read')} />} />
-        <IconButton ref={settingsTrigger} className="settings-trigger" label={labels.settings} icon={Settings}
+            canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
+            onAction={(id, action) => {
+              const header = headers.find(({ key }) => connectedMessageId(key) === id);
+              if (header) void handleAction(action, 'list', header.key);
+            }}
+            busy={busy || actionBusy} refreshing={isInbox ? startupSyncing || inboxRefreshing : folderRefreshing} onRefresh={refresh}
+            older={searchText ? (search.nextCursor ? {
+              cursor: connectedMessageId(search.nextCursor), loading: Boolean(search.loadingMore),
+              onLoad: () => { if (!pendingAction.current) void search.loadMore(); },
+              error: search.error === undefined ? undefined : imapErrorMessage(search.error, labels.imapErrors),
+              searchResults: true,
+            } : undefined) : older.cursor && !(isInbox && startupSyncing) && failure === undefined ? {
+              cursor: connectedMessageId(older.cursor), loading: older.loading, onLoad: () => { if (!busy && !pendingAction.current) void older.load(); },
+              error: older.error === undefined ? undefined : imapErrorMessage(older.error, labels.imapErrors),
+            } : undefined}
+            searchStatus={search.pending ? <p className="mailbox-status" role="status">{labels.searchingMessages}</p> :
+              searchText && search.error !== undefined && !search.headers ? <div className="mailbox-status" role="status">
+                {labels.searchUnavailable} <button type="button" className="text-button" onClick={search.retry}>{labels.retrySearch}</button>
+              </div> : undefined}
+            status={busy ? <p className="mailbox-status" role="status">{labels.connectedInbox.refreshing}</p> :
+              failure !== undefined ? <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p> :
+                actionError?.folder === folder && actionError.source === 'list' &&
+                  <p className="account-setup-error" role="alert">{imapErrorMessage(actionError.error, labels.imapErrors)}</p>}
+            divider={<PaneDivider pane="listWidth" width={preferences.listWidth} disabled={false} onResize={(listWidth, save) => update({ listWidth }, save)} />}
+          />
+          <MessageReader key={`reader:${folder}`} message={selected} opened={openedMessage} headingRef={readerHeading} inert={showFolders} onBack={() => setMobilePane('list')}
+            onRespond={respond} canRespond={canRespond} canForward={canForward}
+            onAction={(action) => { if (selectedHeader) void handleAction(action, 'reader', selectedHeader.key); }} actionBusy={actionBusy || busy}
+            actionError={actionError?.folder === folder && actionError.source === 'reader' ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
+            canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
+            body={selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`} accountId={accountId} folder={folder} messageKey={selectedHeader.key}
+              unread={selectedHeader.unread} themeId={themeId} colorScheme={colorScheme}
+              onOpened={(message) => {
+                setOpened({ id: messageId, message });
+                if (message.attachments?.length && !selectedHeader.hasAttachments) {
+                  patchHeaders(folder, (current) => current.map((header) => connectedMessageId(header.key) === selected?.id
+                    ? { ...header, hasAttachments: true } : header));
+                }
+              }}
+              onSeen={(source, key) => applyHeaderActions(source, [key], 'read')} />} />
+        </>}
+        <IconButton ref={settingsTrigger} className="settings-trigger" label={labels.settings} icon={Settings} tooltip="bottom"
           aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls={settingsOpen ? 'settings-drawer' : undefined}
           disabled={showFolders || quickSwitching} onClick={openSettings} />
       </div>
@@ -731,14 +772,12 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
           });
           closeComposer();
         }}
+        onScheduled={() => {
+          completeComposer();
+          setNotice('scheduled');
+        }}
         onSent={(copy) => {
-          setDrafts((current) => {
-            if (current[composer.id] !== drafts[composer.id]) return current;
-            const next = { ...current };
-            delete next[composer.id];
-            return next;
-          });
-          setComposer((current) => current === composer ? undefined : current);
+          completeComposer();
           setNotice(copy === 'unavailable' ? 'sentWithoutCopy' : 'sent');
           setSentRevision((revision) => revision + 1);
           setFlight((value) => value + 1);

@@ -23,8 +23,10 @@ fn main() -> tauri::Result<()> {
         .plugin(tauri_plugin_notification::init())
         .manage(mail::MailOperations::default())
         .manage(mail::GmailSession::default())
+        .manage(mail::ImapSessions::default())
         .manage(mail::AttachmentPreviews::default())
         .manage(mail::sync::InboxSync::default())
+        .manage(mail::scheduled::ScheduledMail::default())
         .manage(unread_badge::UnreadBadge::default())
         .on_window_event(desktop::handle_window_event)
         .setup(|app| {
@@ -36,6 +38,7 @@ fn main() -> tauri::Result<()> {
                 log::warn!("Could not initialize Lusi's system tray: {error}");
             }
             tauri::async_runtime::spawn(mail::sync::run(app.handle().clone()));
+            tauri::async_runtime::spawn(mail::scheduled::run(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -58,6 +61,10 @@ fn main() -> tauri::Result<()> {
             mail::download_connected_attachment,
             mail::open_connected_attachment,
             mail::send_connected_message,
+            mail::scheduled::schedule_message,
+            mail::scheduled::list_scheduled_messages,
+            mail::scheduled::read_scheduled_message,
+            mail::scheduled::cancel_scheduled_message,
             mail::update_connected_message,
             mail::update_connected_messages
         ])

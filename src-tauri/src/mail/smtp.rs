@@ -20,20 +20,20 @@ use std::time::Duration;
 const ATTACHMENT_LIMIT: usize = 5 * 1024 * 1024;
 const BODY_LIMIT: usize = 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutgoingMessage {
-    to: Vec<String>,
+    pub(super) to: Vec<String>,
     cc: Vec<String>,
     bcc: Vec<String>,
-    subject: String,
+    pub(super) subject: String,
     body: String,
     html: Option<String>,
     attachments: Vec<OutgoingAttachment>,
     reply_thread: Option<ReplyThread>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct OutgoingAttachment {
     name: String,
@@ -41,7 +41,41 @@ struct OutgoingAttachment {
 }
 
 impl OutgoingMessage {
-    fn build(self, sender: &str) -> Result<Message, MailError> {
+    pub(super) fn bodies(&self) -> (String, String) {
+        match &self.html {
+            Some(html) => {
+                let html = sanitize_outgoing_html(html);
+                let mut text_markup = html.clone();
+                // The MIME decoder recognizes paragraph and line breaks. Keep editor
+                // line blocks and list items on separate lines in the fallback too.
+                for block_end in [
+                    "</div>",
+                    "</li>",
+                    "</blockquote>",
+                    "</h1>",
+                    "</h2>",
+                    "</h3>",
+                    "</pre>",
+                ] {
+                    text_markup = text_markup.replace(block_end, "</p>");
+                }
+                (html_to_text(&text_markup), html)
+            }
+            None => {
+                let html = text_to_html(&self.body);
+                (self.body.clone(), html)
+            }
+        }
+    }
+
+    pub(super) fn attachment_names(&self) -> Vec<String> {
+        self.attachments
+            .iter()
+            .map(|file| file.name.clone())
+            .collect()
+    }
+
+    pub(super) fn build(&self, sender: &str) -> Result<Message, MailError> {
         if self.to.is_empty()
             || self.to.len() + self.cc.len() + self.bcc.len() > 50
             || self.subject.len() > 998
@@ -70,10 +104,10 @@ impl OutgoingMessage {
         };
         let mut builder = Message::builder()
             .from(mailbox(sender)?)
-            .subject(self.subject)
+            .subject(self.subject.clone())
             .message_id(None);
-        if let Some(thread) = self.reply_thread {
-            let (parent, references) = thread.into_headers()?;
+        if let Some(thread) = &self.reply_thread {
+            let (parent, references) = thread.headers()?;
             builder = builder.in_reply_to(parent).references(references);
         }
         for address in &self.to {
@@ -85,30 +119,7 @@ impl OutgoingMessage {
         for address in &self.bcc {
             builder = builder.bcc(mailbox(address)?);
         }
-        let (plain, html) = match self.html {
-            Some(html) => {
-                let html = sanitize_outgoing_html(&html);
-                let mut text_markup = html.clone();
-                // The MIME decoder recognizes paragraph and line breaks. Keep editor
-                // line blocks and list items on separate lines in the fallback too.
-                for block_end in [
-                    "</div>",
-                    "</li>",
-                    "</blockquote>",
-                    "</h1>",
-                    "</h2>",
-                    "</h3>",
-                    "</pre>",
-                ] {
-                    text_markup = text_markup.replace(block_end, "</p>");
-                }
-                (html_to_text(&text_markup), html)
-            }
-            None => {
-                let html = text_to_html(&self.body);
-                (self.body, html)
-            }
-        };
+        let (plain, html) = self.bodies();
         let body = MultiPart::alternative()
             .singlepart(SinglePart::plain(plain))
             .singlepart(SinglePart::html(html));
@@ -119,7 +130,7 @@ impl OutgoingMessage {
         }
         let mut parts = MultiPart::mixed().multipart(body);
         let mut total_bytes = 0;
-        for file in self.attachments {
+        for file in &self.attachments {
             if file.name.trim().is_empty()
                 || file.name.len() > 255
                 || file
@@ -130,14 +141,14 @@ impl OutgoingMessage {
                 return Err(MailError::InvalidMessage);
             }
             let data = STANDARD
-                .decode(file.data)
+                .decode(&file.data)
                 .map_err(|_| MailError::InvalidMessage)?;
             total_bytes += data.len();
             if total_bytes > ATTACHMENT_LIMIT {
                 return Err(MailError::InvalidMessage);
             }
             parts = parts.singlepart(
-                Attachment::new(file.name).body(
+                Attachment::new(file.name.clone()).body(
                     data,
                     ContentType::parse("application/octet-stream")
                         .map_err(|_| MailError::InvalidMessage)?,

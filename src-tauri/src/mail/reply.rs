@@ -20,7 +20,7 @@ pub(super) struct ReplyThread {
 }
 
 impl ReplyThread {
-    pub(super) fn into_headers(self) -> Result<(String, String), MailError> {
+    pub(super) fn headers(&self) -> Result<(String, String), MailError> {
         let parent = valid_id(&self.in_reply_to).ok_or(MailError::InvalidMessage)?;
         if self.references.len() > 20 {
             return Err(MailError::InvalidMessage);
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(reply.to, ["reply@example.test"]);
         assert_eq!(reply.cc, ["team@example.test", "other@example.test"]);
         assert_eq!(
-            reply.thread.unwrap().into_headers().unwrap(),
+            reply.thread.unwrap().headers().unwrap(),
             (
                 "<parent@example.test>".into(),
                 "<earlier@example.test> <parent@example.test>".into(),

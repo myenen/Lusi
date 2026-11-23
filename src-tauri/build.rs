@@ -19,6 +19,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "download_connected_attachment",
         "open_connected_attachment",
         "send_connected_message",
+        "schedule_message",
+        "list_scheduled_messages",
+        "read_scheduled_message",
+        "cancel_scheduled_message",
         "update_connected_message",
         "update_connected_messages",
     ]);

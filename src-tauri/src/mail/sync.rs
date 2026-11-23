@@ -1,6 +1,6 @@
 use super::{
-    database, imap, notifications, storage, stored_connection, update_unread_badge, AccountId,
-    Inbox, MailError, MailOperations,
+    database, foreground_imap, imap, notifications, storage, stored_connection,
+    update_unread_badge, AccountId, Inbox, MailError, MailOperations,
 };
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -37,8 +37,15 @@ pub(super) async fn refresh(
         return Err(MailError::NoAccount);
     }
     let cached = database(app, move |db, _| storage::snapshot_for(db, account_id)).await?;
-    let (account, auth) = stored_connection(app, account_id).await?;
-    let (cursor, headers, unread) = imap::sync_inbox(&account, &auth, &cached.headers).await?;
+    let (cursor, headers, unread) = if background {
+        let (account, auth) = stored_connection(app, account_id).await?;
+        imap::sync_inbox(&account, &auth, &cached.headers).await?
+    } else {
+        foreground_imap(app, account_id, None, async |connection| {
+            imap::refresh_inbox(connection, &cached.headers).await
+        })
+        .await?
+    };
     let changed = headers != cached.headers;
     let (headers, newly_unread) = database(app, move |db, _| {
         let newly_unread = storage::commit_inbox_sync(db, account_id, &headers, cursor, changed)?;

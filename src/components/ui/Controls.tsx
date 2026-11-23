@@ -1,15 +1,16 @@
 import type { ComponentProps, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { useLabels } from '../../app/i18n';
+import { Tooltip, type TooltipSide } from './Tooltip';
 
-type IconButtonProps = ComponentProps<'button'> & { label: string; icon: LucideIcon };
+type IconButtonProps = ComponentProps<'button'> & { label: string; icon: LucideIcon; tooltip?: TooltipSide };
 
-export function IconButton({ label, icon: Icon, className = '', ...props }: IconButtonProps) {
-  return (
-    <button type="button" className={`icon-button ${className}`} aria-label={label} title={label} {...props}>
-      <Icon size={18} aria-hidden="true" />
-    </button>
-  );
+export function IconButton({ label, icon: Icon, className = '', tooltip, title, ...props }: IconButtonProps) {
+  const button = <button type="button" className={`icon-button ${className}`} aria-label={label}
+    title={tooltip ? undefined : title ?? label} {...props}>
+    <Icon size={18} aria-hidden="true" />
+  </button>;
+  return tooltip ? <Tooltip label={title ?? label} side={tooltip}>{button}</Tooltip> : button;
 }
 
 export function Toolbar({ label, children, className = '' }: { label: string; children: ReactNode; className?: string }) {

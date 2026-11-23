@@ -107,6 +107,24 @@ export interface OutgoingMessage {
   replyThread?: ReplyThread;
 }
 
+export interface ScheduledItem {
+  id: number;
+  from: string;
+  recipients: string;
+  subject: string;
+  scheduledAt: number;
+  state: 'queued' | 'retrying' | 'sending' | 'failed' | 'uncertain';
+}
+
+export const scheduleMessage = (accountId: number, scheduledAt: number, message: OutgoingMessage) =>
+  invoke<void>('schedule_message', { accountId, scheduledAt, message });
+export const listScheduledMessages = () => invoke<ScheduledItem[]>('list_scheduled_messages');
+export const readScheduledMessage = (id: number) =>
+  invoke<{ body: string; html: string; attachmentNames: string[] }>('read_scheduled_message', { id });
+export const cancelScheduledMessage = (id: number) => invoke<void>('cancel_scheduled_message', { id });
+export const onScheduledChanged = (handler: (sentAccountId: number | null) => void) =>
+  listen<number | null>('mail:scheduled-changed', ({ payload }) => handler(payload), { target: 'main' });
+
 export type FolderKind = 'inbox' | 'sent' | 'drafts' | 'archive' | 'trash' | 'junk' | 'all' | 'flagged' | 'custom';
 export interface MailFolder {
   id: string;

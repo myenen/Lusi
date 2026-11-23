@@ -1,3 +1,4 @@
+use super::imap_session::ImapConnection;
 use super::{
     attachments,
     search::{SearchPage, SearchRequest},
@@ -58,6 +59,20 @@ pub(super) async fn sync_inbox(
     .await
     .map_err(|_| MailError::Timeout)??;
     let unread = inbox_unread(&mut session, Some("INBOX")).await;
+    Ok((cursor, headers, unread))
+}
+
+pub(super) async fn refresh_inbox(
+    connection: &mut ImapConnection,
+    cached: &[MailHeader],
+) -> Result<(MessageKey, Vec<MailHeader>, Option<u32>), MailError> {
+    let (cursor, headers) = timeout(
+        REQUEST_TIMEOUT,
+        sync_inbox_headers(&mut connection.session, cached),
+    )
+    .await
+    .map_err(|_| MailError::Timeout)??;
+    let unread = connection_unread(connection, "INBOX").await;
     Ok((cursor, headers, unread))
 }
 
@@ -172,43 +187,40 @@ async fn inbox_unread<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
     .flatten()
 }
 
-pub async fn folder(
-    account: &Account,
-    auth: &MailAuth,
+pub(super) async fn folder(
+    connection: &mut ImapConnection,
     folder: &str,
 ) -> Result<Vec<MailHeader>, MailError> {
-    timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, auth).await?;
-        fetch_folder(&mut session, folder).await
-    })
+    timeout(
+        REQUEST_TIMEOUT,
+        fetch_folder(&mut connection.session, folder),
+    )
     .await
     .map_err(|_| MailError::Timeout)?
 }
 
 pub(super) async fn older_messages(
-    account: &Account,
-    auth: &MailAuth,
+    connection: &mut ImapConnection,
     folder: &str,
     before: MessageKey,
 ) -> Result<OlderMessages, MailError> {
-    timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, auth).await?;
-        fetch_older_messages(&mut session, folder, before).await
-    })
+    timeout(
+        REQUEST_TIMEOUT,
+        fetch_older_messages(&mut connection.session, folder, before),
+    )
     .await
     .map_err(|_| MailError::Timeout)?
 }
 
 pub(super) async fn search_messages(
-    account: &Account,
-    auth: &MailAuth,
+    connection: &mut ImapConnection,
     folder: &str,
     request: &SearchRequest,
 ) -> Result<SearchPage, MailError> {
-    timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, auth).await?;
-        fetch_search_page(&mut session, folder, request).await
-    })
+    timeout(
+        REQUEST_TIMEOUT,
+        fetch_search_page(&mut connection.session, folder, request),
+    )
     .await
     .map_err(|_| MailError::Timeout)?
 }
@@ -352,24 +364,34 @@ async fn search_uids<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>
     None
 }
 
-pub async fn message(
-    account: &Account,
-    auth: &MailAuth,
+pub(super) async fn message(
+    connection: &mut ImapConnection,
     folder: &str,
     key: MessageKey,
 ) -> Result<(OpenedMessage, Option<u32>), MailError> {
     let deadline = Instant::now() + REQUEST_TIMEOUT;
-    let mut session = timeout_at(deadline, authenticate(account, auth))
-        .await
-        .map_err(|_| MailError::Timeout)??;
-    let (message, marked_read) =
-        open_in_session(&mut session, folder, key, &account.email, deadline).await?;
+    let (message, marked_read) = open_in_session(
+        &mut connection.session,
+        folder,
+        key,
+        &connection.email,
+        deadline,
+    )
+    .await?;
+    connection.reusable = message.seen_error.is_none();
     let unread = if marked_read {
-        inbox_unread(&mut session, Some(folder)).await
+        connection_unread(connection, folder).await
     } else {
         None
     };
     Ok((message, unread))
+}
+
+async fn connection_unread(connection: &mut ImapConnection, folder: &str) -> Option<u32> {
+    let unread = inbox_unread(&mut connection.session, Some(folder)).await;
+    // STATUS and UNSELECT are optional, but a timeout may leave a response pending.
+    connection.reusable &= unread.is_some();
+    unread
 }
 
 pub(super) async fn download_attachment(
@@ -490,28 +512,26 @@ async fn open_in_session<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::De
 }
 
 pub(super) async fn apply_action(
-    account: &Account,
-    auth: &MailAuth,
+    connection: &mut ImapConnection,
     folder: &str,
     key: MessageKey,
     action: MessageAction,
-    action_timeout: Option<Duration>,
+    deadline: Option<Instant>,
 ) -> Result<Option<u32>, MailError> {
-    let mut session = timeout(action_timeout.unwrap_or(REQUEST_TIMEOUT), async {
-        let mut session = authenticate(account, auth).await?;
-        apply_message_action(&mut session, folder, key, action).await?;
-        Ok::<_, MailError>(session)
-    })
+    timeout_at(
+        deadline.unwrap_or_else(|| Instant::now() + REQUEST_TIMEOUT),
+        apply_message_action(&mut connection.session, folder, key, action),
+    )
     .await
     .map_err(|_| {
-        if action_timeout.is_some() {
+        if deadline.is_some() {
             MailError::Timeout
         } else {
             MailError::ActionFailed
         }
     })??;
     Ok(if action.affects_unread_count() {
-        inbox_unread(&mut session, Some(folder)).await
+        connection_unread(connection, folder).await
     } else {
         None
     })
@@ -528,29 +548,30 @@ async fn apply_message_action<T: AsyncRead + AsyncWrite + Unpin + Send + std::fm
 }
 
 pub(super) async fn apply_batch(
-    account: &Account,
-    auth: &MailAuth,
+    connection: &mut ImapConnection,
     folder: &str,
     keys: &[MessageKey],
     action: MessageAction,
 ) -> Result<(BatchActionResult, Option<u32>), MailError> {
     let first = keys.first().ok_or(MailError::InvalidSettings)?;
     let deadline = Instant::now() + REQUEST_TIMEOUT * 2;
-    let (mut session, destination) = timeout_at(deadline, async {
-        let mut session = authenticate(account, auth).await?;
-        let destination = action_destination(&mut session, folder, action).await?;
-        select_action_folder(&mut session, folder, first.uid_validity).await?;
-        Ok::<_, MailError>((session, destination))
+    let session = &mut connection.session;
+    let destination = timeout_at(deadline, async {
+        let destination = action_destination(session, folder, action).await?;
+        select_action_folder(session, folder, first.uid_validity).await?;
+        Ok::<_, MailError>(destination)
     })
     .await
     .map_err(|_| MailError::ActionFailed)??;
     let result =
-        change_selected_batch(&mut session, keys, action, destination.as_deref(), deadline).await;
-    let unread = if !result.updated.is_empty() && action.affects_unread_count() {
-        inbox_unread(&mut session, Some(folder)).await
-    } else {
-        None
-    };
+        change_selected_batch(session, keys, action, destination.as_deref(), deadline).await;
+    connection.reusable = result.error.is_none();
+    let unread =
+        if connection.reusable && !result.updated.is_empty() && action.affects_unread_count() {
+            connection_unread(connection, folder).await
+        } else {
+            None
+        };
     Ok((result, unread))
 }
 
@@ -693,7 +714,7 @@ async fn change_selected_message<T: AsyncRead + AsyncWrite + Unpin + Send + std:
         .map_err(|_| MailError::ActionFailed)
 }
 
-async fn authenticate(
+pub(super) async fn authenticate(
     account: &Account,
     auth: &MailAuth,
 ) -> Result<Session<TlsStream<TcpStream>>, MailError> {
@@ -779,14 +800,14 @@ async fn request_start_tls<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::
     Ok(client.into_inner())
 }
 
-pub async fn folders(account: &Account, auth: &MailAuth) -> Result<Vec<MailFolder>, MailError> {
+pub(super) async fn folders(connection: &mut ImapConnection) -> Result<Vec<MailFolder>, MailError> {
     timeout(REQUEST_TIMEOUT, async {
-        let mut session = authenticate(account, auth).await?;
+        let session = &mut connection.session;
         let capabilities = session
             .capabilities()
             .await
             .map_err(|_| MailError::Folders)?;
-        discover_folders(&mut session, advertises(&capabilities, "SPECIAL-USE")).await
+        discover_folders(session, advertises(&capabilities, "SPECIAL-USE")).await
     })
     .await
     .map_err(|_| MailError::Timeout)?

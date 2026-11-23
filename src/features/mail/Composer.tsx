@@ -1,8 +1,8 @@
-import { ChevronUp, FileText, Maximize2, Minimize2, Minus, Paperclip, Send, Trash2, Type, X } from 'lucide-react';
+import { ChevronUp, Clock3, FileText, Maximize2, Minimize2, Minus, Paperclip, Send, Trash2, Type, X } from 'lucide-react';
 import { Fragment, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type Ref } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
-import { imapErrorMessage, sendConnectedMessage, type ReplyThread, type SentCopyStatus } from '../accounts/imap-api';
+import { imapErrorMessage, scheduleMessage, sendConnectedMessage, type ReplyThread, type SentCopyStatus } from '../accounts/imap-api';
 import { ComposerEditor, type DraftEditor } from './ComposerEditor';
 
 export type ResponseMode = 'reply' | 'replyAll' | 'forward';
@@ -17,6 +17,7 @@ export interface Draft {
   editor?: DraftEditor;
   files: File[];
   replyThread?: ReplyThread;
+  scheduledFor?: string;
 }
 
 export const emptyDraft: Draft = { to: '', cc: '', bcc: '', subject: '', body: '', files: [] };
@@ -36,7 +37,7 @@ export interface ComposerHandle {
   reveal: () => void;
 }
 
-export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDiscard, onSendStart, onSent }: {
+export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDiscard, onSendStart, onSent, onScheduled }: {
   ref?: Ref<ComposerHandle>;
   accountId: number;
   draft: Draft;
@@ -46,11 +47,13 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   onDiscard: () => void;
   onSendStart: () => void;
   onSent: (copy: SentCopyStatus) => void;
+  onScheduled: () => void;
 }) {
   const labels = useLabels();
   const dialog = useRef<HTMLDialogElement>(null);
   const toInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const scheduleInput = useRef<HTMLInputElement>(null);
   const minimizeButton = useRef<HTMLButtonElement>(null);
   const cancelDiscardButton = useRef<HTMLButtonElement>(null);
   const discardButton = useRef<HTMLButtonElement>(null);
@@ -63,6 +66,7 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   const [minimized, setMinimized] = useState(false);
   const [showFormatting, setShowFormatting] = useState(true);
   const [discarding, setDiscarding] = useState(false);
+  const scheduling = draft.scheduledFor !== undefined;
   const fields = showCopies ? ['to', 'cc', 'bcc', 'subject'] as const : ['to', 'subject'] as const;
 
   useEffect(() => {
@@ -114,19 +118,36 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
       toInput.current?.focus();
       return;
     }
+    let scheduledAt: number | undefined;
+    if (draft.scheduledFor !== undefined) {
+      const value = scheduleInput.current?.value ?? draft.scheduledFor;
+      const date = new Date(value);
+      const localTime = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+      if (!(date.getTime() > Date.now()) || localTime.toISOString().slice(0, 16) !== value) {
+        setFailure('invalidSchedule');
+        scheduleInput.current?.focus();
+        return;
+      }
+      scheduledAt = Math.floor(date.getTime() / 1000);
+    }
     pending.current = true;
     setSending(true);
     setFailure(undefined);
-    onSendStart();
+    if (scheduledAt === undefined) onSendStart();
     try {
       const attachments = await Promise.all(draft.files.map(encodeFile));
-      const copy = await sendConnectedMessage(accountId, {
+      const message = {
         to, cc: splitAddresses(draft.cc), bcc: splitAddresses(draft.bcc),
         subject: draft.subject, body: draft.body, attachments,
         ...(draft.editor && { html: draft.editor.html }),
         ...(draft.replyThread && { replyThread: draft.replyThread }),
-      });
-      onSent(copy);
+      };
+      if (scheduledAt === undefined) {
+        onSent(await sendConnectedMessage(accountId, message));
+      } else {
+        await scheduleMessage(accountId, scheduledAt, message);
+        onScheduled();
+      }
     } catch (error) {
       setFailure(typeof error === 'string' ? error : 'unknown');
     } finally {
@@ -160,35 +181,43 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
     </header>
     <form id={`${fieldId}-form`} hidden={minimized} onSubmit={send}>
       <fieldset className="composer-fields" disabled={sending}>
-        <div className="composer-headers">{fields.map((field) => {
-          const id = `${fieldId}-${field}`;
-          const input = <input id={id} ref={field === 'to' ? toInput : undefined} value={draft[field]}
-            required={field === 'to'} maxLength={field === 'subject' ? 300 : 8192}
-            onChange={(event) => change(field, event.target.value)} />;
-          return <Fragment key={field}>
-            <label htmlFor={id}>{labels[field]}</label>
-            {field === 'to' ? <div className="composer-recipient">
-              {input}<button type="button" className="text-button" aria-expanded={showCopies}
-                onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
-            </div> : input}
-          </Fragment>;
-        })}</div>
-        <ComposerEditor body={draft.body} editor={draft.editor} disabled={sending} showFormatting={showFormatting}
-          onChange={(editor) => change('editor', editor)} />
-        {draft.files.length > 0 && <ul className="composer-attachments" aria-label={labels.attachments}>
-          {draft.files.map((file, index) => <li className="composer-attachment" key={`${index}-${file.name}`}>
-            <FileText size={17} aria-hidden="true" />
-            <span className="attachment-meta"><strong title={file.name}>{file.name}</strong></span>
-            <IconButton label={labels.removeAttachment(file.name)} icon={X}
-              onClick={(event) => {
-                event.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.composer-attach')?.focus();
-                change('files', draft.files.filter((_, position) => index !== position));
-              }} />
-          </li>)}
-        </ul>}
-        {failure && <p className="composer-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p>}
+        <div className="composer-fields-content">
+          <div className="composer-headers">{fields.map((field) => {
+            const id = `${fieldId}-${field}`;
+            const input = <input id={id} ref={field === 'to' ? toInput : undefined} value={draft[field]}
+              required={field === 'to'} maxLength={field === 'subject' ? 300 : 8192}
+              onChange={(event) => change(field, event.target.value)} />;
+            return <Fragment key={field}>
+              <label htmlFor={id}>{labels[field]}</label>
+              {field === 'to' ? <div className="composer-recipient">
+                {input}<button type="button" className="text-button" aria-expanded={showCopies}
+                  onClick={() => setShowCopies(!showCopies)}>{labels.copies}</button>
+              </div> : input}
+            </Fragment>;
+          })}</div>
+          <ComposerEditor body={draft.body} editor={draft.editor} disabled={sending} showFormatting={showFormatting}
+            onChange={(editor) => change('editor', editor)} />
+          {draft.files.length > 0 && <ul className="composer-attachments" aria-label={labels.attachments}>
+            {draft.files.map((file, index) => <li className="composer-attachment" key={`${index}-${file.name}`}>
+              <FileText size={17} aria-hidden="true" />
+              <span className="attachment-meta"><strong title={file.name}>{file.name}</strong></span>
+              <IconButton label={labels.removeAttachment(file.name)} icon={X}
+                onClick={(event) => {
+                  event.currentTarget.closest('form')?.querySelector<HTMLButtonElement>('.composer-attach')?.focus();
+                  change('files', draft.files.filter((_, position) => index !== position));
+                }} />
+            </li>)}
+          </ul>}
+          {failure && <p className="composer-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p>}
+        </div>
       </fieldset>
       <footer className="composer-footer">
+        {scheduling && <div className="composer-schedule" id={`${fieldId}-schedule`}>
+          <label htmlFor={`${fieldId}-schedule-date`}>{labels.scheduleDate}</label>
+          <input id={`${fieldId}-schedule-date`} ref={scheduleInput} type="datetime-local"
+            value={draft.scheduledFor} required disabled={sending}
+            onInput={(event) => change('scheduledFor', event.currentTarget.value)} />
+        </div>}
         <input ref={fileInput} type="file" hidden multiple onChange={(event) => {
           const files = [...draft.files, ...Array.from(event.currentTarget.files ?? [])];
           event.currentTarget.value = '';
@@ -199,13 +228,19 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
           }
         }} />
         <button className="compose-button" type="submit" disabled={sending || failure === 'sendUncertain'}>
-          <Send size={16} aria-hidden="true" />{labels.send}
+          {scheduling ? <Clock3 size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+          {scheduling ? labels.scheduleSend : labels.send}
         </button>
+        <IconButton label={labels.sendLater} icon={Clock3} aria-expanded={scheduling}
+          aria-controls={scheduling ? `${fieldId}-schedule` : undefined} disabled={sending || failure === 'sendUncertain'} onClick={() => {
+            change('scheduledFor', scheduling ? undefined : '');
+            if (!scheduling) requestAnimationFrame(() => scheduleInput.current?.focus());
+          }} />
         <IconButton label={labels.editorFormatting} icon={Type} aria-pressed={showFormatting}
           disabled={sending} onClick={() => setShowFormatting(!showFormatting)} />
         <IconButton className="composer-attach" label={labels.attachFiles} icon={Paperclip}
           disabled={sending} onClick={() => fileInput.current?.click()} />
-        {sending && <small role="status">{labels.sendingMessage}</small>}
+        {sending && <small role="status">{scheduling ? labels.schedulingMessage : labels.sendingMessage}</small>}
         {discarding ? <div className="composer-discard-confirmation" role="group" aria-label={labels.discardDraft}>
           <button ref={cancelDiscardButton} type="button" className="text-button" onClick={() => {
             setDiscarding(false);

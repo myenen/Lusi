@@ -37,9 +37,9 @@ export function MessageReader({ message, opened, body, headingRef, inert, onBack
     <main className="reader" aria-label={labels.reader} inert={inert} tabIndex={-1}>
       <header className="reader-toolbar">
         <IconButton className="reader-back" label={labels.backToMessages} icon={ArrowLeft} onClick={onBack} />
-        {message && <MessageActions message={message} className="reader-actions" showStar actionBusy={actionBusy}
+        {message && <MessageActions message={message} className="reader-actions" showStar tooltip="bottom" actionBusy={actionBusy}
           canArchive={canArchive} canTrash={canTrash} inTrash={inTrash} onAction={onAction}>
-          <IconButton ref={printTrigger} icon={Printer} label={labels.printPreview} aria-haspopup="dialog"
+          <IconButton ref={printTrigger} icon={Printer} tooltip="bottom" label={labels.printPreview} aria-haspopup="dialog"
             disabled={!opened} onClick={() => { if (opened) setPrintPreview({ message, opened }); }} />
         </MessageActions>}
       </header>

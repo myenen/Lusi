@@ -4,7 +4,7 @@ The desktop shell in `src-tauri/` hosts the React application in the platform We
 
 The workspace fills the desktop content area. On macOS, the native title bar is overlaid on the workspace so the system window controls sit above the sidebar. Only the main macOS window can use the drag region. The browser preview reserves the same space on macOS, and Windows uses its native title bar.
 
-The React shell in `src/app/` coordinates folder navigation, search, unread filters, selection, and appearance. It loads the connected Inbox snapshot from the desktop core and opens setup in light Liquid Glass when the account store is empty. The browser preview shows account setup. Fresh preferences default to light Liquid Glass.
+The React shell in `src/app/` coordinates folder navigation, search, unread filters, selection, and appearance. Shared tooltips label the reader toolbar and collapsed sidebar on pointer hover or keyboard focus. It loads the connected Inbox snapshot from the desktop core and opens setup in light Liquid Glass when the account store is empty. The browser preview shows account setup. Fresh preferences default to light Liquid Glass.
 
 The shared `Checkbox` in `src/components/ui/` combines a native input with a themed visual. Notification preferences, message selection, and account setup use this primitive. It retains keyboard and form behavior, and displays the native control in forced-colors mode.
 
@@ -40,13 +40,23 @@ The composer keeps drafts in memory and offers rich-text and HTML source modes. 
 
 The composer owns its frosted backdrop. The backdrop is mounted while the panel is visible and removed when the panel is minimized or closed, including after an accepted send.
 
+The composer reserves space for its action bar at the bottom. Long drafts and quoted replies scroll within the editor in both rich-text and HTML modes. In short windows, the area above the action bar can also scroll to keep addressing fields and formatting controls reachable.
+
 The compose panel docks to the bottom corner and can expand or collapse without remounting the editor. Closing retains the session draft. The discard control confirms before clearing it. The formatting tray edits fonts, text size, color, alignment, lists, and links. The outgoing markup allowlist accepts these text styles and the selected font attributes.
+
+### Scheduled sending
+
+The composer converts the selected local date and time to a UTC timestamp. SQLite stores the validated outgoing payload, including attachments, and the original account ID. The scheduled view lists the queue across accounts in the standard list pane. Selecting an entry loads its body and attachment names from SQLite and opens them with the delivery details and cancellation control. The HTML preview uses the same sanitization as outgoing MIME and the same isolated renderer as incoming mail. The Rust worker wakes for the next due entry while Lusi is running. It claims each entry atomically, then uses the same account credentials, SMTP submission, and Sent-copy flow as immediate sending. The cancellation action removes eligible entries directly.
+
+Connection failures before submission are retried. Rejected submissions and deliveries with an uncertain result appear in the scheduled list. An interrupted claim expires into a delivery status that requires review. Pending entries survive restart and use the original timestamp across time zone changes.
 
 ### Inbox synchronization
 
 The Rust worker monitors the active account independently of the window. Startup and manual refresh use the same reconciliation path as the worker. Reconciliation reads the UIDs and flags of the latest Inbox window, fetches headers only for unknown UIDs, and atomically replaces the saved window when it changes. A new UIDVALIDITY starts a new generation. Incomplete responses leave the previous snapshot available. The unread badge uses the server count, and the worker emits Inbox snapshots only to the main window for the active account.
 
 A read-only IMAP IDLE connection wakes reconciliation on changes. The worker bounds each IDLE session, uses two-minute polling when IDLE is unavailable, and backs off after failures up to ten minutes. It releases the idle connection when the active account changes. The mail operation lock is used for reconciliation and is free during IDLE and backoff waits.
+
+Foreground IMAP operations reuse one authenticated connection scoped to the account. Folder listing, search, pagination, reading, message actions, and manual reconciliation share that connection. Before reuse, a bounded NOOP checks the session. Account switches and reauthorization invalidate it. IMAP IDLE and background reconciliation use separate connections, as do attachment downloads. When a command fails or is cancelled, the foreground connection is discarded. An unconfirmed message move triggers Inbox reconciliation without replaying the mutation.
 
 ### New mail notifications
 

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { updateConnectedMessages, type MessageKey, type MessageSearchRequest } from '../features/accounts/imap-api';
+import { updateConnectedMessages, type MessageKey, type MessageSearchRequest, type ScheduledItem } from '../features/accounts/imap-api';
 import { App } from './App';
 
 const dialogPrototype = HTMLDialogElement.prototype;
@@ -792,9 +792,15 @@ describe('connected mailbox', () => {
 
   it('uses the response footer to create scoped replies and forwards', async () => {
     const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const longBody = `Inbox body\n${'Earlier message content.\n'.repeat(120)}End of original message.`;
+    invoke.mockImplementation(async (command, args) => {
+      const result = await fallback(command, args);
+      return command === 'read_connected_message' ? { ...(result as object), body: longBody } : result;
+    });
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Inbox message/ }));
-    expect(await screen.findByText('Inbox body')).toBeTruthy();
+    expect(await screen.findByText(/Inbox body/)).toBeTruthy();
     const actions = within(screen.getByRole('group', { name: 'Respond to message' }));
     fireEvent.click(actions.getByRole('button', { name: /^Reply$/ }));
     const reply = within(screen.getByRole('dialog', { name: 'Reply' }));
@@ -802,6 +808,9 @@ describe('connected mailbox', () => {
     expect(reply.getByLabelText<HTMLInputElement>('Subject').value).toBe('Re: Inbox message');
     const replyBody = reply.getByRole('textbox', { name: 'Message body' });
     expect(replyBody.textContent).toContain('> Inbox body');
+    expect(replyBody.textContent).toContain('> End of original message.');
+    expect(reply.getByRole('button', { name: 'Send' })).toBeTruthy();
+    expect(reply.getByRole('button', { name: 'Attach files' })).toBeTruthy();
     replyBody.textContent = 'Kept reply draft';
     fireEvent.input(replyBody);
     fireEvent.click(reply.getByRole('button', { name: 'Close composer' }));
@@ -858,6 +867,65 @@ describe('connected mailbox', () => {
     expect(container.querySelector('.composer-backdrop')).toBeNull();
     fireEvent.click(compose);
     expect(screen.getByLabelText<HTMLInputElement>('Subject').value).toBe('');
+  });
+
+  it('schedules through the current account and cancels from the global scheduled list', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const inputDate = '2099-06-21T09:30';
+    const scheduledAt = new Date(inputDate).getTime() / 1000;
+    const items: ScheduledItem[] = [{
+      id: 9, from: 'second@example.test', recipients: 'another@example.test', subject: 'Second account',
+      scheduledAt, state: 'queued',
+    }];
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'schedule_message') {
+        items.push({ id: 10, from: 'mail@example.test', recipients: 'recipient@example.test', subject: 'Send later', scheduledAt, state: 'queued' });
+        return undefined;
+      }
+      if (command === 'list_scheduled_messages') return [...items];
+      if (command === 'read_scheduled_message') {
+        return { body: 'Scheduled message body', html: '<p><strong>Scheduled message body</strong></p>', attachmentNames: ['notes.txt'] };
+      }
+      if (command === 'cancel_scheduled_message') {
+        items.pop();
+        return undefined;
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Compose' }));
+    const composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    fireEvent.change(composer.getByLabelText('To'), { target: { value: 'recipient@example.test' } });
+    fireEvent.change(composer.getByLabelText('Subject'), { target: { value: 'Send later' } });
+    fireEvent.click(composer.getByRole('button', { name: 'Send later' }));
+    fireEvent.input(composer.getByLabelText('Send date and time'), { target: { value: inputDate } });
+    fireEvent.click(composer.getByRole('button', { name: 'Schedule send' }));
+    expect(await screen.findByText('Message scheduled.')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('schedule_message', {
+      accountId: 1, scheduledAt,
+      message: expect.objectContaining({ subject: 'Send later', to: ['recipient@example.test'] }),
+    }, undefined);
+    expect(invoke.mock.calls.some(([command]) => command === 'send_connected_message')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scheduled' }));
+    const scheduled = within(await screen.findByRole('region', { name: 'Scheduled' }));
+    const row = await scheduled.findByRole('button', { name: /Send later/ });
+    expect(scheduled.getByText('second@example.test')).toBeTruthy();
+    fireEvent.click(row);
+    expect(row.getAttribute('aria-current')).toBe('true');
+    const details = within(screen.getByRole('main', { name: 'Message reader' }));
+    expect(details.getByRole('heading', { name: 'Send later' })).toBeTruthy();
+    expect(details.getByText('Send date and time')).toBeTruthy();
+    expect((await details.findByTitle('HTML message content')).getAttribute('srcdoc')).toContain('<strong>Scheduled message body</strong>');
+    expect(details.getByText('notes.txt')).toBeTruthy();
+    fireEvent.click(details.getByRole('button', { name: 'Show plain text' }));
+    expect(details.getByText('Scheduled message body')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('read_scheduled_message', { id: 10 }, undefined);
+    fireEvent.click(details.getByRole('button', { name: 'Cancel sending' }));
+    expect(await scheduled.findByText('Second account')).toBeTruthy();
+    await vi.waitFor(() => expect(scheduled.queryByText('Send later')).toBeNull());
+    expect(invoke).toHaveBeenCalledWith('cancel_scheduled_message', { id: 10 }, undefined);
   });
 
   it('edits HTML source, restores the rich body and submits HTML', async () => {
@@ -1082,7 +1150,16 @@ describe('connected mailbox', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Collapse sidebar' }));
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeTruthy();
     const folders = within(screen.getByRole('navigation', { name: 'Mail folders' }));
-    expect(await folders.findByRole('button', { name: 'Sent' })).toBeTruthy();
+    const sent = await folders.findByRole('button', { name: 'Sent' });
+    expect(sent.hasAttribute('title')).toBe(false);
+    act(() => sent.focus());
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Sent');
+    fireEvent.keyDown(sent, { key: 'Escape' });
+    await vi.waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull());
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    act(() => settings.focus());
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Settings');
+    expect(settings.hasAttribute('title')).toBe(false);
   });
 
   it('moves focus into a message in a narrow window and restores it on return', async () => {

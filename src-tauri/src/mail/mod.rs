@@ -4,8 +4,10 @@ pub mod discovery;
 mod gmail;
 mod html;
 mod imap;
+mod imap_session;
 pub(crate) mod notifications;
 mod reply;
+pub(crate) mod scheduled;
 mod search;
 mod setup_diagnostics;
 mod smtp;
@@ -16,13 +18,17 @@ pub(crate) mod sync;
 use crate::unread_badge::UnreadBadge;
 use serde::{Deserialize, Serialize};
 use smtp::{OutgoingMessage, SmtpSettings};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 use zeroize::Zeroizing;
 
 pub(crate) use attachments::AttachmentPreviews;
 pub use gmail::GmailSession;
+pub(crate) use imap_session::ImapSessions;
 use search::{SearchPage, SearchRequest};
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -53,6 +59,8 @@ pub enum MailError {
     InvalidMessage,
     SendRejected,
     SendUncertain,
+    InvalidSchedule,
+    ScheduleUnavailable,
     ActionUnavailable,
     ActionFailed,
     Inbox,
@@ -354,6 +362,7 @@ pub async fn switch_connected_account(
     account_id: AccountId,
 ) -> Result<Inbox, MailError> {
     let inbox = database(&app, move |db, _| storage::select_account(db, account_id)).await?;
+    app.state::<ImapSessions>().clear();
     update_unread_badge(&app, None).await;
     app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
@@ -394,6 +403,7 @@ pub async fn connect_imap_account(
     .await;
     setup_diagnostics::record(format_args!("storage ok={}", result.is_ok()));
     let inbox = result?;
+    app.state::<ImapSessions>().clear();
     update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
     app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
@@ -434,6 +444,7 @@ pub async fn connect_gmail_account(
         .state::<GmailSession>()
         .save_authorized(email, authorized.access, save)
         .await?;
+    app.state::<ImapSessions>().clear();
     update_unread_badge(&app, unread.map(|count| (inbox.account_id, count))).await;
     app.state::<sync::InboxSync>().request_refresh();
     Ok(inbox)
@@ -452,8 +463,10 @@ pub async fn list_connected_folders(
     app: AppHandle,
     account_id: AccountId,
 ) -> Result<Vec<MailFolder>, MailError> {
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    imap::folders(&account, &auth).await
+    foreground_imap(&app, account_id, None, async |connection| {
+        imap::folders(connection).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -463,8 +476,10 @@ pub async fn read_connected_folder(
     folder: String,
 ) -> Result<Vec<MailHeader>, MailError> {
     validate_folder(&folder)?;
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    imap::folder(&account, &auth, &folder).await
+    foreground_imap(&app, account_id, None, async |connection| {
+        imap::folder(connection, &folder).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -478,8 +493,10 @@ pub async fn read_older_connected_messages(
     if before.uid == 0 || before.uid_validity == 0 {
         return Err(MailError::MessageMissing);
     }
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    imap::older_messages(&account, &auth, &folder, before).await
+    foreground_imap(&app, account_id, None, async |connection| {
+        imap::older_messages(connection, &folder, before).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -491,8 +508,10 @@ pub async fn search_connected_messages(
 ) -> Result<SearchPage, MailError> {
     validate_folder(&folder)?;
     request.validate()?;
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    imap::search_messages(&account, &auth, &folder, &request).await
+    foreground_imap(&app, account_id, None, async |connection| {
+        imap::search_messages(connection, &folder, &request).await
+    })
+    .await
 }
 
 fn validate_folder(folder: &str) -> Result<(), MailError> {
@@ -521,6 +540,26 @@ async fn stored_connection(
         None => MailAuth::OAuth(app.state::<GmailSession>().access(&account.email).await?),
     };
     Ok((account, auth))
+}
+
+async fn foreground_imap<R>(
+    app: &AppHandle,
+    account_id: AccountId,
+    deadline: Option<Instant>,
+    operation: impl AsyncFnOnce(&mut imap_session::ImapConnection) -> Result<R, MailError>,
+) -> Result<R, MailError> {
+    app.state::<ImapSessions>()
+        .run(
+            account_id,
+            deadline,
+            async || {
+                let (account, auth) = stored_connection(app, account_id).await?;
+                let session = imap::authenticate(&account, &auth).await?;
+                Ok((account.email, session))
+            },
+            operation,
+        )
+        .await
 }
 
 #[tauri::command]
@@ -553,23 +592,17 @@ pub async fn read_connected_message(
         };
         let mut unread_count = None;
         if unread {
-            let result = async {
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
-                let (account, auth) =
-                    tokio::time::timeout_at(deadline, stored_connection(&app, account_id))
-                        .await
-                        .map_err(|_| MailError::Timeout)??;
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let result = foreground_imap(&app, account_id, Some(deadline), async |connection| {
                 imap::apply_action(
-                    &account,
-                    &auth,
+                    connection,
                     &folder,
                     key,
                     MessageAction::Read,
-                    Some(remaining),
+                    Some(deadline),
                 )
                 .await
-            }
+            })
             .await;
             match result {
                 Ok(count) => {
@@ -588,8 +621,10 @@ pub async fn read_connected_message(
         }
         (opened, unread_count)
     } else {
-        let (account, auth) = stored_connection(&app, account_id).await?;
-        let (opened, unread_count) = imap::message(&account, &auth, &folder, key).await?;
+        let (opened, unread_count) = foreground_imap(&app, account_id, None, async |connection| {
+            imap::message(connection, &folder, key).await
+        })
+        .await?;
         if let Ok(payload) = serde_json::to_vec(&opened.content) {
             let _ = database(&app, move |db, _| {
                 storage::save_message(db, account_id, &folder, key, &payload)
@@ -678,7 +713,15 @@ pub async fn send_connected_message(
     message: OutgoingMessage,
 ) -> Result<SentCopyStatus, MailError> {
     let _operation = operations.0.lock().await;
-    let (email, settings, password) = database(&app, move |db, directory| {
+    send_from_account(&app, account_id, message).await
+}
+
+async fn send_from_account(
+    app: &AppHandle,
+    account_id: AccountId,
+    message: OutgoingMessage,
+) -> Result<SentCopyStatus, MailError> {
+    let (email, settings, password) = database(app, move |db, directory| {
         let account = storage::account(db, account_id)?.ok_or(MailError::NoAccount)?;
         if account.uses_gmail_oauth() {
             let outgoing = discovery::gmail_servers(&account.email).1;
@@ -697,7 +740,7 @@ pub async fn send_connected_message(
         return Ok(SentCopyStatus::ProviderManaged);
     }
     // A Sent-folder failure must never prompt the user to retry an accepted SMTP submission.
-    let saved = match stored_connection(&app, account_id).await {
+    let saved = match stored_connection(app, account_id).await {
         Ok((account, auth)) => imap::save_sent_copy(&account, &auth, &sent).await.is_ok(),
         Err(_) => false,
     };
@@ -730,8 +773,11 @@ pub async fn update_connected_message(
         return Err(MailError::MessageMissing);
     }
     let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    let unread = imap::apply_action(&account, &auth, &folder, key, action, None).await?;
+    let unread = foreground_imap(&app, account_id, None, async |connection| {
+        imap::apply_action(connection, &folder, key, action, None).await
+    })
+    .await
+    .inspect_err(|error| reconcile_uncertain_action(&app, error))?;
     // The server already accepted the action. A cache error must not prompt a retry.
     let _ = database(&app, move |db, _| {
         let transaction = db.transaction().map_err(|_| MailError::Storage)?;
@@ -766,8 +812,18 @@ pub async fn update_connected_messages(
         return Err(MailError::InvalidSettings);
     }
     let _operation = operations.0.lock().await;
-    let (account, auth) = stored_connection(&app, account_id).await?;
-    let (result, unread) = imap::apply_batch(&account, &auth, &folder, &keys, action).await?;
+    let (result, unread) = foreground_imap(&app, account_id, None, async |connection| {
+        imap::apply_batch(connection, &folder, &keys, action).await
+    })
+    .await
+    .inspect_err(|error| reconcile_uncertain_action(&app, error))?;
+    if let Some(error) = &result.error {
+        if !result.updated.is_empty() && action.affects_unread_count() {
+            app.state::<sync::InboxSync>().request_refresh();
+        } else {
+            reconcile_uncertain_action(&app, error);
+        }
+    }
     if !result.updated.is_empty() {
         let updated = result.updated.clone();
         // A cache failure must not turn a confirmed server operation into a retry.
@@ -784,6 +840,12 @@ pub async fn update_connected_messages(
         update_unread_badge(&app, Some((account_id, unread))).await;
     }
     Ok(result)
+}
+
+fn reconcile_uncertain_action(app: &AppHandle, error: &MailError) {
+    if matches!(error, MailError::ActionFailed | MailError::Timeout) {
+        app.state::<sync::InboxSync>().request_refresh();
+    }
 }
 
 #[cfg(test)]

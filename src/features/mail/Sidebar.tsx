@@ -1,8 +1,9 @@
-import { Archive, FilePenLine, Folder, Inbox, Mail, PanelLeftClose, PanelLeftOpen, PenLine, Send, ShieldAlert, Star, Trash2, X, type LucideIcon } from 'lucide-react';
+import { Archive, Clock3, FilePenLine, Folder, Inbox, Mail, PanelLeftClose, PanelLeftOpen, PenLine, Send, ShieldAlert, Star, Trash2, X, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
+import { Tooltip } from '../../components/ui/Tooltip';
 import type { FolderKind, MailFolder } from '../accounts/imap-api';
 import { folderDisplayName } from './connected-mail';
 
@@ -11,7 +12,7 @@ const folderIcons: Record<FolderKind, LucideIcon> = {
   junk: ShieldAlert, all: Mail, flagged: Star, custom: Folder,
 };
 
-export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account, onToggle, onClose, onSelect, onCompose, canSend, appearance, divider, status }: {
+export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account, onToggle, onClose, onSelect, onCompose, canSend, appearance, divider, status, scheduledOpen, onOpenScheduled }: {
   folder: string;
   folders: MailFolder[];
   inboxUnread: number;
@@ -26,6 +27,8 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
   appearance: ReactNode;
   divider: ReactNode;
   status?: ReactNode;
+  scheduledOpen: boolean;
+  onOpenScheduled: () => void;
 }) {
   const labels = useLabels();
   const close = useRef<HTMLButtonElement>(null);
@@ -36,13 +39,15 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
   function folderButton(entry: MailFolder) {
     const label = folderDisplayName(entry, labels);
     const Icon = folderIcons[entry.kind];
-    return <button key={entry.id} type="button" className="folder-link" data-folder={entry.kind}
-      title={tooltips || entry.kind === 'custom' ? label : undefined} aria-current={entry.id === folder ? 'page' : undefined}
-      onClick={() => onSelect(entry.id)}>
-      <Icon size={17} aria-hidden="true" />
-      <span className="sidebar-copy folder-name">{label}</span>
-      {entry.kind === 'inbox' && inboxUnread > 0 && <span className="folder-count sidebar-copy" aria-label={labels.unreadCount(inboxUnread)}>{inboxUnread}</span>}
-    </button>;
+    return <Tooltip key={entry.id} label={tooltips ? label : undefined} side="right">
+      <button type="button" className="folder-link" data-folder={entry.kind}
+        title={!tooltips && entry.kind === 'custom' ? label : undefined} aria-current={!scheduledOpen && entry.id === folder ? 'page' : undefined}
+        onClick={() => onSelect(entry.id)}>
+        <Icon size={17} aria-hidden="true" />
+        <span className="sidebar-copy folder-name">{label}</span>
+        {entry.kind === 'inbox' && inboxUnread > 0 && <span className="folder-count sidebar-copy" aria-label={labels.unreadCount(inboxUnread)}>{inboxUnread}</span>}
+      </button>
+    </Tooltip>;
   }
 
   return (
@@ -63,6 +68,7 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
           <span className="brand-icon" aria-hidden="true" /><span className="sidebar-copy">Lusi</span>
           <IconButton
             className="sidebar-collapse"
+            tooltip="right"
             label={collapsed ? labels.expandSidebar : labels.collapseSidebar}
             icon={collapsed ? PanelLeftOpen : PanelLeftClose}
             aria-controls="sidebar"
@@ -71,13 +77,21 @@ export function Sidebar({ folder, folders, inboxUnread, open, collapsed, account
           />
           {open && <IconButton ref={close} className="drawer-close" label={labels.closeFolders} icon={X} onClick={onClose} />}
         </div>
-        <button type="button" className="compose-button" aria-label={labels.compose}
-          title={canSend ? labels.compose : labels.imapErrors.noSmtp} disabled={!canSend}
-          onClick={(event) => onCompose(event.currentTarget)}>
-          <PenLine size={18} aria-hidden="true" /><span className="sidebar-copy">{labels.compose}</span>
-        </button>
+        <Tooltip label={tooltips ? (canSend ? labels.compose : labels.imapErrors.noSmtp) : undefined} side="right">
+          <button type="button" className="compose-button" aria-label={labels.compose}
+            title={tooltips ? undefined : canSend ? labels.compose : labels.imapErrors.noSmtp} disabled={!canSend}
+            onClick={(event) => onCompose(event.currentTarget)}>
+            <PenLine size={18} aria-hidden="true" /><span className="sidebar-copy">{labels.compose}</span>
+          </button>
+        </Tooltip>
         <nav className="mailboxes" aria-label={labels.mailFolders}>
           {folders.filter((entry) => entry.kind !== 'custom').map(folderButton)}
+          <Tooltip label={tooltips ? labels.scheduledTitle : undefined} side="right">
+            <button type="button" className="folder-link" aria-label={labels.scheduledTitle}
+              aria-current={scheduledOpen ? 'page' : undefined} onClick={onOpenScheduled}>
+              <Clock3 size={17} aria-hidden="true" /><span className="sidebar-copy folder-name">{labels.scheduledTitle}</span>
+            </button>
+          </Tooltip>
           {customFolders.length > 0 && <section className="mailboxes" aria-labelledby="custom-folders-heading">
             <h2 className="folder-heading" id="custom-folders-heading"><span className="sidebar-copy">{labels.folderHeading}</span></h2>
             {customFolders.map(folderButton)}
