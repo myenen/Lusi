@@ -39,7 +39,7 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let read_version =
         |db: &Connection| db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0));
-    if read_version(db)? == 10 {
+    if read_version(db)? == 11 {
         return Ok(());
     }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -55,7 +55,7 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             );
         ",
         )?,
-        1..=10 => {}
+        1..=11 => {}
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     if version < 2 {
@@ -119,6 +119,9 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 10 {
         transaction.execute_batch(include_str!("migration-10.sql"))?;
+    }
+    if version < 11 {
+        transaction.execute_batch(include_str!("migration-11.sql"))?;
     }
     transaction.commit()
 }
@@ -650,7 +653,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mail.sqlite3");
         let mut db = open(&path).unwrap();
-        db.execute_batch("DROP TABLE inbox_sync_state; DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
+        db.execute_batch("DROP TABLE notification_targets; DROP TABLE inbox_sync_state; DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
             .unwrap();
         let account = |email: &str| Account {
             email: email.into(),

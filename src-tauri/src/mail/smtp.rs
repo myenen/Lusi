@@ -150,26 +150,37 @@ impl OutgoingMessage {
     }
 }
 
+pub(super) struct SentMessage {
+    pub(super) id: String,
+    pub(super) mime: Vec<u8>,
+}
+
 pub(super) async fn send(
     settings: &SmtpSettings,
     email: &str,
     auth: &MailAuth,
     message: OutgoingMessage,
-) -> Result<(), MailError> {
+) -> Result<SentMessage, MailError> {
     let message = message.build(email)?;
+    let id = message
+        .headers()
+        .get_raw("Message-ID")
+        .ok_or(MailError::InvalidMessage)?
+        .to_owned();
+    let mime = message.formatted();
     let mut session =
         tokio::time::timeout(Duration::from_secs(15), authenticate(settings, email, auth))
             .await
             .map_err(|_| MailError::SmtpUnavailable)??;
     match tokio::time::timeout(
         Duration::from_secs(35),
-        session.send(message.envelope(), &message.formatted()),
+        session.send(message.envelope(), &mime),
     )
     .await
     {
         Ok(Ok(_)) => {
             let _ = tokio::time::timeout(Duration::from_secs(1), session.quit()).await;
-            Ok(())
+            Ok(SentMessage { id, mime })
         }
         Ok(Err(error)) if error.status().is_some() || error.is_client() => {
             Err(MailError::SendRejected)

@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/notifications.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["lusi-notification"]
+      }
+    }
+  }
+}

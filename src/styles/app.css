@@ -683,13 +683,21 @@ label.attachment-link { cursor: pointer; }
 }
 .mail-composer[data-minimized="true"] { width: 340px; height: auto; }
 .mail-composer form:not([hidden]) { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: auto; }
-.workspace dialog::backdrop, .drawer-backdrop {
+.composer-backdrop {
+  position: fixed;
+  z-index: 7;
+  inset: 0;
+  pointer-events: none;
+}
+.workspace dialog::backdrop, .drawer-backdrop,
+.composer-backdrop {
   background: rgb(35 48 82 / 22%);
   -webkit-backdrop-filter: blur(7px) saturate(115%);
   backdrop-filter: blur(7px) saturate(115%);
 }
 .workspace[data-color-scheme="dark"] dialog::backdrop,
-.workspace[data-color-scheme="dark"] .drawer-backdrop { background: rgb(5 9 20 / 50%); }
+.workspace[data-color-scheme="dark"] .drawer-backdrop,
+.workspace[data-color-scheme="dark"] .composer-backdrop { background: rgb(5 9 20 / 50%); }
 
 .settings-drawer {
   position: fixed;
@@ -950,7 +958,8 @@ label.attachment-link { cursor: pointer; }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .workspace { background: var(--window); }
   .glass-panel, .reader-footer .toolbar { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--reading); }
-  .workspace dialog::backdrop, .drawer-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .workspace dialog::backdrop, .drawer-backdrop,
+  .composer-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
   .message-row, .reader-footer .toolbar { border-color: var(--divider); }
   @media (hover: hover) {
     .toolbar.message-row-actions { background: var(--reading); -webkit-backdrop-filter: none; backdrop-filter: none; }

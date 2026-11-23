@@ -254,6 +254,7 @@ const en = {
   send: 'Send',
   sendingMessage: 'Sending…',
   messageSent: 'Message accepted by the outgoing server.',
+  sentWithoutCopy: 'Message sent. The server copy in Sent could not be confirmed.',
   preferenceErrors: { load: 'Could not load preferences.', save: 'Could not save preferences.' },
 };
 
@@ -508,6 +509,7 @@ const tr: typeof en = {
   send: 'Gönder',
   sendingMessage: 'Gönderiliyor…',
   messageSent: 'Giden sunucu iletiyi kabul etti.',
+  sentWithoutCopy: 'İleti gönderildi. Gönderilenler klasöründeki kopya doğrulanamadı.',
   preferenceErrors: { load: 'Tercihler yüklenemedi.', save: 'Tercihler kaydedilemedi.' },
 };
 

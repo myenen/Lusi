@@ -393,6 +393,22 @@ describe('connected mailbox', () => {
     }), undefined);
   });
 
+  it('opens a Windows notification queued before the app registered its listeners', async () => {
+    const invoke = mockMailbox();
+    const header = { ...fixtureHeader, subject: 'Queued notification message' };
+    const fallback = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => command === 'take_notification_open'
+      ? { inbox: { accountId: 2, email: 'other@example.test', headers: [header], canSend: true }, header }
+      : fallback(command, args));
+    mockMailEvents(invoke);
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: header.subject })).toBeTruthy();
+    expect(await screen.findByText('Inbox body')).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', expect.objectContaining({
+      accountId: 2, folder: 'INBOX', key: header.key,
+    }), undefined);
+  });
+
   it('hides notification details by default and disables the details setting when notifications are off', async () => {
     mockMailbox();
     render(<App />);
@@ -818,7 +834,7 @@ describe('connected mailbox', () => {
 
   it('retains a draft through resizing and clears it only after confirming discard', async () => {
     mockMailbox();
-    render(<App />);
+    const { container } = render(<App />);
     const compose = await screen.findByRole('button', { name: 'Compose' });
     fireEvent.click(compose);
     const panel = screen.getByRole('dialog', { name: 'New message' });
@@ -826,9 +842,12 @@ describe('connected mailbox', () => {
     fireEvent.change(draft.getByLabelText('Subject'), { target: { value: 'Keep for later' } });
     fireEvent.click(draft.getByRole('button', { name: 'Expand composer' }));
     expect(panel.getAttribute('data-layout')).toBe('expanded');
+    expect(container.querySelector('.composer-backdrop')).toBeTruthy();
     fireEvent.click(draft.getByRole('button', { name: 'Minimize composer' }));
+    expect(container.querySelector('.composer-backdrop')).toBeNull();
     expect(draft.queryByRole('textbox', { name: 'Subject' })).toBeNull();
     fireEvent.click(compose);
+    expect(container.querySelector('.composer-backdrop')).toBeTruthy();
     expect(draft.getByRole<HTMLInputElement>('textbox', { name: 'Subject' }).value).toBe('Keep for later');
     fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
     fireEvent.click(draft.getByRole('button', { name: 'Keep draft' }));
@@ -836,6 +855,7 @@ describe('connected mailbox', () => {
     fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
     fireEvent.click(draft.getByRole('button', { name: 'Discard draft' }));
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(container.querySelector('.composer-backdrop')).toBeNull();
     fireEvent.click(compose);
     expect(screen.getByLabelText<HTMLInputElement>('Subject').value).toBe('');
   });
@@ -926,6 +946,36 @@ describe('connected mailbox', () => {
     expect(await screen.findByText('Message moved to Trash.')).toBeTruthy();
     expect(invoke).toHaveBeenCalledWith('update_connected_message', { accountId: 1, folder: 'INBOX', key: fixtureKey, action: 'trash' }, undefined);
   });
+  it.each(['saved', 'unavailable'] as const)('refreshes Sent after SMTP accepts a message and reports the copy status (%s)', async (copy) => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    let submitted = false;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'send_connected_message') {
+        submitted = true;
+        return copy;
+      }
+      if (command === 'read_connected_folder' && args.folder === 'INBOX.Outgoing') {
+        return submitted && copy === 'saved' ? [{ ...fixtureHeader, subject: 'Newly sent message' }] : [];
+      }
+      return fallback(command, args);
+    });
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
+    const composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    expect(container.querySelector('.composer-backdrop')).toBeTruthy();
+    fireEvent.change(composer.getByLabelText('To'), { target: { value: 'recipient@example.test' } });
+    fireEvent.click(composer.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText(copy === 'saved'
+      ? 'Message accepted by the outgoing server.'
+      : 'Message sent. The server copy in Sent could not be confirmed.')).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'New message' })).toBeNull();
+    expect(container.querySelector('.composer-backdrop')).toBeNull();
+    if (copy === 'saved') expect(await screen.findByRole('button', { name: /Newly sent message/ })).toBeTruthy();
+    expect(invoke.mock.calls.filter(([command]) => command === 'send_connected_message')).toHaveLength(1);
+  });
+
   it('sends from the composer and uses IMAP actions for the selected message', async () => {
     const invoke = mockMailbox();
     render(<App />);

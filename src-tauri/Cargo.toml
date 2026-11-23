@@ -40,7 +40,9 @@ tauri-plugin-notification = "2.8.1"
 keyring = { version = "3.6.3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "UI_Notifications"] }
 keyring = { version = "3.6.3", features = ["windows-native"] }
+tauri-plugin-single-instance = "2.5.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }

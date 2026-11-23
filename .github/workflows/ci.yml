@@ -89,6 +89,8 @@ jobs:
           $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S', "/D=$destination" -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "Lusi installer exited with code $($setup.ExitCode)" }
           $executable = Join-Path $destination 'lusi.exe'
+          $protocol = Get-Item 'HKCU:\Software\Classes\lusi-notification\shell\open\command'
+          if ($protocol.GetValue('') -ne ('"' + $executable + '" "%1"')) { throw 'Lusi notification protocol was not registered' }
           node -e 'const app = require("node:fs").readFileSync(process.argv[1]); for (const name of ["LUSI_GOOGLE_CLIENT_ID", "LUSI_GOOGLE_CLIENT_SECRET"]) { const value = process.env[name]; if (value && !app.includes(value)) throw new Error("Missing build configuration: " + name); }' $executable
           if ($LASTEXITCODE -ne 0) { throw 'The installed app is missing its Google desktop client configuration' }
           Remove-Item Env:LUSI_GOOGLE_CLIENT_ID, Env:LUSI_GOOGLE_CLIENT_SECRET -ErrorAction SilentlyContinue

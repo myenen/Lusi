@@ -135,6 +135,9 @@ export interface NotificationOpen {
 }
 export const onNotificationOpen = (handler: (target: NotificationOpen) => void) =>
   listen<NotificationOpen>('mail:notification-open', ({ payload }) => handler(payload), { target: 'main' });
+export const onNotificationReady = (handler: () => void) =>
+  listen('mail:notification-ready', handler, { target: 'main' });
+export const takeNotificationOpen = () => invoke<NotificationOpen | null>('take_notification_open');
 export const listConnectedFolders = (accountId: number) => invoke<MailFolder[]>('list_connected_folders', { accountId });
 export const readConnectedFolder = (accountId: number, folder: string) => invoke<ImapHeader[]>('read_connected_folder', { accountId, folder });
 export const readOlderConnectedMessages = (accountId: number, folder: string, before: MessageKey) =>
@@ -147,7 +150,9 @@ export const downloadConnectedAttachment = (accountId: number, folder: string, k
   invoke<AttachmentDownloadResult>('download_connected_attachment', { accountId, folder, key, part });
 export const openConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
   invoke<void>('open_connected_attachment', { accountId, folder, key, part });
-export const sendConnectedMessage = (accountId: number, message: OutgoingMessage) => invoke<void>('send_connected_message', { accountId, message });
+export type SentCopyStatus = 'saved' | 'providerManaged' | 'unavailable';
+export const sendConnectedMessage = (accountId: number, message: OutgoingMessage) =>
+  invoke<SentCopyStatus>('send_connected_message', { accountId, message });
 export const updateConnectedMessage = (accountId: number, folder: string, key: MessageKey, action: MessageAction) =>
   invoke<void>('update_connected_message', { accountId, folder, key, action });
 const actionBatchSize = 50;

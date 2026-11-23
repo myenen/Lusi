@@ -8,7 +8,17 @@ mod preferences;
 mod unread_badge;
 
 fn main() -> tauri::Result<()> {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(windows)]
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !mail::notifications::activation::activate(app, args.into_iter().skip(1)) {
+                desktop::show_main(app);
+            }
+        }))
+        .manage(mail::notifications::activation::PendingNotification::default());
+
+    builder
         .enable_macos_default_menu(false)
         .plugin(tauri_plugin_notification::init())
         .manage(mail::MailOperations::default())
@@ -18,7 +28,10 @@ fn main() -> tauri::Result<()> {
         .manage(unread_badge::UnreadBadge::default())
         .on_window_event(desktop::handle_window_event)
         .setup(|app| {
+            #[cfg(not(windows))]
             mail::notifications::install(app.handle())?;
+            #[cfg(windows)]
+            mail::notifications::activation::activate(app.handle(), std::env::args().skip(1));
             if let Err(error) = desktop::install_tray(app.handle()) {
                 log::warn!("Could not initialize Lusi's system tray: {error}");
             }
@@ -29,6 +42,7 @@ fn main() -> tauri::Result<()> {
             preferences::load_ui_preferences,
             preferences::save_ui_preferences,
             mail::load_connected_inbox,
+            mail::notifications::take_notification_open,
             mail::list_connected_accounts,
             mail::switch_connected_account,
             mail::discovery::discover_imap_settings,

@@ -676,7 +676,7 @@ pub async fn send_connected_message(
     operations: State<'_, MailOperations>,
     account_id: AccountId,
     message: OutgoingMessage,
-) -> Result<(), MailError> {
+) -> Result<SentCopyStatus, MailError> {
     let _operation = operations.0.lock().await;
     let (email, settings, password) = database(&app, move |db, directory| {
         let account = storage::account(db, account_id)?.ok_or(MailError::NoAccount)?;
@@ -692,7 +692,28 @@ pub async fn send_connected_message(
         Some(password) => MailAuth::Password(password),
         None => MailAuth::OAuth(app.state::<GmailSession>().access(&email).await?),
     };
-    smtp::send(&settings, &email, &auth, message).await
+    let sent = smtp::send(&settings, &email, &auth, message).await?;
+    if matches!(auth, MailAuth::OAuth(_)) {
+        return Ok(SentCopyStatus::ProviderManaged);
+    }
+    // A Sent-folder failure must never prompt the user to retry an accepted SMTP submission.
+    let saved = match stored_connection(&app, account_id).await {
+        Ok((account, auth)) => imap::save_sent_copy(&account, &auth, &sent).await.is_ok(),
+        Err(_) => false,
+    };
+    Ok(if saved {
+        SentCopyStatus::Saved
+    } else {
+        SentCopyStatus::Unavailable
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SentCopyStatus {
+    Saved,
+    ProviderManaged,
+    Unavailable,
 }
 
 #[tauri::command]

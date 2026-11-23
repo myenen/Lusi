@@ -17,6 +17,7 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": { "x": 16, "y": 16 },
+        "maximized": true,
         "width": 1180,
         "height": 820,
         "minWidth": 380,
@@ -40,7 +41,7 @@
         {
           "identifier": "mail-sync-events",
           "windows": ["main"],
-          "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+          "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-take-notification-open"]
         },
         {
           "identifier": "mail-account",

@@ -2,7 +2,7 @@ import { ChevronUp, FileText, Maximize2, Minimize2, Minus, Paperclip, Send, Tras
 import { Fragment, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type Ref } from 'react';
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
-import { imapErrorMessage, sendConnectedMessage, type ReplyThread } from '../accounts/imap-api';
+import { imapErrorMessage, sendConnectedMessage, type ReplyThread, type SentCopyStatus } from '../accounts/imap-api';
 import { ComposerEditor, type DraftEditor } from './ComposerEditor';
 
 export type ResponseMode = 'reply' | 'replyAll' | 'forward';
@@ -45,7 +45,7 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   onClose: () => void;
   onDiscard: () => void;
   onSendStart: () => void;
-  onSent: () => void;
+  onSent: (copy: SentCopyStatus) => void;
 }) {
   const labels = useLabels();
   const dialog = useRef<HTMLDialogElement>(null);
@@ -120,13 +120,13 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
     onSendStart();
     try {
       const attachments = await Promise.all(draft.files.map(encodeFile));
-      await sendConnectedMessage(accountId, {
+      const copy = await sendConnectedMessage(accountId, {
         to, cc: splitAddresses(draft.cc), bcc: splitAddresses(draft.bcc),
         subject: draft.subject, body: draft.body, attachments,
         ...(draft.editor && { html: draft.editor.html }),
         ...(draft.replyThread && { replyThread: draft.replyThread }),
       });
-      onSent();
+      onSent(copy);
     } catch (error) {
       setFailure(typeof error === 'string' ? error : 'unknown');
     } finally {
@@ -135,7 +135,7 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
     }
   }
 
-  return <dialog open ref={dialog} className="composer mail-composer" data-layout={layout}
+  const panel = <dialog open ref={dialog} className="composer mail-composer" data-layout={layout}
     data-minimized={minimized} aria-labelledby={fieldId} onKeyDown={(event) => {
     if (event.key !== 'Escape' || event.defaultPrevented || pending.current) return;
     event.preventDefault();
@@ -217,4 +217,9 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
       </footer>
     </form>
   </dialog>;
+
+  return <>
+    {!minimized && <div className="composer-backdrop" aria-hidden="true" />}
+    {panel}
+  </>;
 }

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRe
 import { IconButton, type Filter } from '../components/ui/Controls';
 import { AccountSetup } from '../features/accounts/AccountSetup';
 import {
-  imapErrorMessage, inboxFolder, listConnectedAccounts, listConnectedFolders, loadConnectedInbox, onInboxSync, onNotificationOpen, readConnectedFolder,
+  imapErrorMessage, inboxFolder, listConnectedAccounts, listConnectedFolders, loadConnectedInbox, onInboxSync, onNotificationOpen, onNotificationReady, readConnectedFolder,
+  takeNotificationOpen,
   refreshConnectedInbox, switchConnectedAccount, updateConnectedMessage, updateConnectedMessages,
   type ConnectedAccount, type ConnectedInbox, type ImapHeader, type MessageAction, type MessageKey, type NotificationOpen, type OpenedMessage,
 } from '../features/accounts/imap-api';
@@ -67,18 +68,26 @@ export function App() {
   useEffect(() => {
     if (!desktop) return;
     let active = true;
-    const registration = onNotificationOpen((target) => {
+    function applyTarget(target: NotificationOpen) {
       if (!active) return;
       openingNotification.current = true;
       setAccountLoadFailed(false);
       setNotification(target);
       setStartupAccountId(undefined);
       setInbox(target.inbox);
-    });
-    void registration.catch(() => {});
+    }
+    function takePending() {
+      if (!active) return;
+      void takeNotificationOpen().then((target) => { if (target) applyTarget(target); }).catch(() => {});
+    }
+    const registrations = [onNotificationOpen(applyTarget), onNotificationReady(takePending)];
+    void registrations[1].then(takePending).catch(() => {});
+    void registrations[0].catch(() => {});
     return () => {
       active = false;
-      void registration.then((unlisten) => unlisten()).catch(() => {});
+      for (const registration of registrations) {
+        void registration.then((unlisten) => unlisten()).catch(() => {});
+      }
     };
   }, [desktop]);
 
@@ -144,6 +153,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const [foldersAttempt, setFoldersAttempt] = useState(0);
   const [folderResult, setFolderResult] = useState<{ folder: string; headers: ImapHeader[]; before?: MessageKey } | { folder: string; error: unknown }>();
   const [folderAttempt, setFolderAttempt] = useState(0);
+  const [sentRevision, setSentRevision] = useState(0);
   const [folderRefreshing, setFolderRefreshing] = useState(false);
   const [readerAttempt, setReaderAttempt] = useState(0);
   const [inboxRefreshing, setInboxRefreshing] = useState(false);
@@ -162,7 +172,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composer, setComposer] = useState<{ id: string; mode: ComposeMode }>();
   const [opened, setOpened] = useState<{ id: string; message: OpenedMessage }>();
-  const [notice, setNotice] = useState<'sent' | 'archive' | 'trash' | 'restore' | 'notificationMissing' | { count: number } | { switchError: unknown }>();
+  const [notice, setNotice] = useState<'sent' | 'sentWithoutCopy' | 'archive' | 'trash' | 'restore' | 'notificationMissing' | { count: number } | { switchError: unknown }>();
   const [flight, setFlight] = useState(0);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<{ folder: string; source: 'list' | 'reader'; error: unknown }>();
@@ -211,6 +221,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const canForward = inbox.canSend && Boolean(openedMessage);
   const visiblePane = selected ? mobilePane : 'list';
   const currentFolder = folders.find(({ id }) => id === folder);
+  const sentRefresh = currentFolder?.kind === 'sent' ? sentRevision : 0;
   const hasOtherFolder = (kind: 'archive' | 'trash') => folders.some((entry) => entry.kind === kind && entry.id !== folder);
   const inTrash = currentFolder?.kind === 'trash';
   const canArchive = !inTrash && hasOtherFolder('archive');
@@ -218,7 +229,8 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const switchFailed = typeof notice === 'object' && 'switchError' in notice;
   const noticeText = typeof notice === 'object'
     ? 'count' in notice ? labels.bulkUpdated(notice.count) : imapErrorMessage(notice.switchError, labels.imapErrors) :
-    notice === 'sent' ? labels.messageSent : notice === 'archive' ? labels.messageArchived :
+    notice === 'sent' ? labels.messageSent : notice === 'sentWithoutCopy' ? labels.sentWithoutCopy :
+    notice === 'archive' ? labels.messageArchived :
     notice === 'trash' ? labels.messageTrashed : notice === 'restore' ? labels.messageRestored :
     notice === 'notificationMissing' ? labels.notificationMissing : undefined;
 
@@ -233,7 +245,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(undefined), switchFailed ? 7000 : 3600);
+    const timer = window.setTimeout(() => setNotice(undefined), switchFailed || notice === 'sentWithoutCopy' ? 7000 : 3600);
     return () => window.clearTimeout(timer);
   }, [notice, switchFailed]);
 
@@ -253,15 +265,20 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     return () => { current = false; };
   }, [accountId, foldersAttempt]);
 
+  const applyFolderHeaders = useEffectEvent((source: string, headers: ImapHeader[]) => {
+    older.reset(source);
+    setFolderResult({ folder: source, headers, before: headers.at(-1)?.key });
+  });
+
   useEffect(() => {
     if (isInbox) return;
     let current = true;
     readConnectedFolder(accountId, folder).then(
-      (headers) => { if (current) setFolderResult({ folder, headers, before: headers.at(-1)?.key }); },
+      (headers) => { if (current) applyFolderHeaders(folder, headers); },
       (error: unknown) => { if (current) setFolderResult({ folder, error: error ?? 'unknown' }); },
     ).finally(() => { if (current) setFolderRefreshing(false); });
     return () => { current = false; };
-  }, [accountId, folder, folderAttempt, isInbox]);
+  }, [accountId, folder, folderAttempt, isInbox, sentRefresh]);
 
   function replaceInbox(updated: ConnectedInbox) {
     setInboxBefore(updated.headers.at(-1)?.key);
@@ -714,7 +731,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
           });
           closeComposer();
         }}
-        onSent={() => {
+        onSent={(copy) => {
           setDrafts((current) => {
             if (current[composer.id] !== drafts[composer.id]) return current;
             const next = { ...current };
@@ -722,7 +739,8 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
             return next;
           });
           setComposer((current) => current === composer ? undefined : current);
-          setNotice('sent');
+          setNotice(copy === 'unavailable' ? 'sentWithoutCopy' : 'sent');
+          setSentRevision((revision) => revision + 1);
           setFlight((value) => value + 1);
           void sounds.play('send');
         }} />}

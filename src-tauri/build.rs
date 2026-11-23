@@ -3,6 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "load_ui_preferences",
         "save_ui_preferences",
         "load_connected_inbox",
+        "take_notification_open",
         "list_connected_accounts",
         "switch_connected_account",
         "discover_imap_settings",

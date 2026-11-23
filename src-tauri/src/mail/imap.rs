@@ -792,6 +792,60 @@ pub async fn folders(account: &Account, auth: &MailAuth) -> Result<Vec<MailFolde
     .map_err(|_| MailError::Timeout)?
 }
 
+pub(super) async fn save_sent_copy(
+    account: &Account,
+    auth: &MailAuth,
+    message: &super::smtp::SentMessage,
+) -> Result<(), MailError> {
+    timeout(REQUEST_TIMEOUT, async {
+        let mut session = authenticate(account, auth).await?;
+        let capabilities = session
+            .capabilities()
+            .await
+            .map_err(|_| MailError::Folders)?;
+        store_sent_copy(
+            &mut session,
+            advertises(&capabilities, "SPECIAL-USE"),
+            message,
+        )
+        .await
+    })
+    .await
+    .map_err(|_| MailError::Timeout)?
+}
+
+async fn store_sent_copy<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+    special_use: bool,
+    message: &super::smtp::SentMessage,
+) -> Result<(), MailError> {
+    let folders = discover_folders(session, special_use).await?;
+    let folder = folders
+        .iter()
+        .find(|folder| folder.kind == FolderKind::Sent)
+        .ok_or(MailError::Folder)?;
+    session
+        .examine(&folder.id)
+        .await
+        .map_err(|_| MailError::Folder)?;
+    // The id comes from the same MIME bytes submitted to SMTP.
+    let id = &message.id;
+    if !id.is_ascii() || id.contains(['"', '\\']) || id.chars().any(char::is_control) {
+        return Err(MailError::InvalidMessage);
+    }
+    let existing = session
+        .uid_search(format!("HEADER Message-ID \"{id}\""))
+        .await
+        .map_err(|_| MailError::Folder)?;
+    if existing.is_empty() {
+        session
+            .append(&folder.id, Some("(\\Seen)"), None, &message.mime)
+            .await
+            .map_err(|_| MailError::Folder)?;
+    }
+    Ok(())
+}
+
 fn advertises(capabilities: &Capabilities, name: &str) -> bool {
     capabilities.iter().any(|capability| {
         matches!(capability, Capability::Atom(value) if value.eq_ignore_ascii_case(name))
@@ -820,6 +874,7 @@ async fn fetch_folders<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
         .await
         .map_err(|_| MailError::Folders)?;
     let mut folders = Vec::new();
+    let mut sent_candidates = Vec::new();
     let mut seen = std::collections::HashSet::new();
     while let Some(name) = names.try_next().await.map_err(|_| MailError::Folders)? {
         let raw = name.name();
@@ -846,11 +901,28 @@ async fn fetch_folders<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
             (raw.to_owned(), kind)
         };
         if seen.insert(id.clone()) {
+            if kind == FolderKind::Custom {
+                let leaf = name
+                    .delimiter()
+                    .and_then(|delimiter| raw.rsplit(delimiter).next())
+                    .unwrap_or(raw);
+                if matches!(
+                    decode_folder_name(leaf).to_lowercase().as_str(),
+                    "sent" | "sent items" | "sent messages" | "sent mail" | "gönderilenler"
+                ) {
+                    sent_candidates.push(folders.len());
+                }
+            }
             folders.push(MailFolder {
                 id,
                 name: decode_folder_name(raw),
                 kind,
             });
+        }
+    }
+    if let [index] = sent_candidates.as_slice() {
+        if !folders.iter().any(|folder| folder.kind == FolderKind::Sent) {
+            folders[*index].kind = FolderKind::Sent;
         }
     }
     Ok(folders)
@@ -1303,6 +1375,55 @@ mod tests {
     }
 
     #[test]
+    fn saves_sent_mime_once_in_the_server_sent_folder() {
+        tauri::async_runtime::block_on(async {
+            for (already_saved, special_use) in [(false, false), (true, true)] {
+                timeout(Duration::from_secs(5), async {
+                    use tokio::io::AsyncReadExt;
+
+                    let mime = b"Message-ID: <fixture@example.test>\r\nSubject: Test\r\n\r\nMessage body\r\n";
+                    let (client, server) = duplex(4096);
+                    let fixture = tokio::spawn(async move {
+                        let mut server = BufReader::new(server);
+                        exchange(&mut server, r#"LOGIN "mail@example.test" "fixture-only""#, "").await;
+                        let (list, folders, mailbox) = if special_use {
+                            (r#"LIST "" "*" RETURN (SPECIAL-USE)"#, "* LIST (\\Sent) \"/\" Parent/Outbox\r\n", "Parent/Outbox")
+                        } else {
+                            (r#"LIST "" "*""#, "* LIST () \".\" INBOX.Sent\r\n", "INBOX.Sent")
+                        };
+                        exchange(&mut server, list, folders).await;
+                        exchange(&mut server, &format!("EXAMINE \"{mailbox}\""), "* OK [UIDVALIDITY 20] stable\r\n").await;
+                        let search = if already_saved { "* SEARCH 42\r\n" } else { "* SEARCH\r\n" };
+                        exchange(&mut server, r#"UID SEARCH HEADER Message-ID "<fixture@example.test>""#, search).await;
+                        if already_saved {
+                            let mut line = String::new();
+                            assert_eq!(server.read_line(&mut line).await.unwrap(), 0);
+                        } else {
+                            let mut line = String::new();
+                            server.read_line(&mut line).await.unwrap();
+                            let (tag, command) = line.split_once(' ').unwrap();
+                            assert_eq!(command.trim_end(), format!("APPEND \"{mailbox}\" (\\Seen) {{{}}}", mime.len()));
+                            server.get_mut().write_all(b"+ Send literal\r\n").await.unwrap();
+                            let mut uploaded = vec![0; mime.len() + 2];
+                            server.read_exact(&mut uploaded).await.unwrap();
+                            assert_eq!(&uploaded[..mime.len()], mime);
+                            assert_eq!(&uploaded[mime.len()..], b"\r\n");
+                            server.get_mut().write_all(format!("{tag} OK stored\r\n").as_bytes()).await.unwrap();
+                        }
+                    });
+                    let mut session = Client::new(client).login("mail@example.test", "fixture-only").await.unwrap();
+                    store_sent_copy(&mut session, special_use, &super::super::smtp::SentMessage {
+                        id: "<fixture@example.test>".into(),
+                        mime: mime.to_vec(),
+                    }).await.unwrap();
+                    drop(session);
+                    fixture.await.unwrap();
+                }).await.unwrap();
+            }
+        });
+    }
+
+    #[test]
     fn wakes_on_idle_delivery_and_uses_fallback_without_idle_capability() {
         tauri::async_runtime::block_on(async {
             for supported in [true, false] {
@@ -1339,9 +1460,13 @@ mod tests {
                         let tag = tag.to_owned();
                         server
                             .get_mut()
-                            .write_all(b"+ waiting\r\n* 2 EXISTS\r\n")
+                            .write_all(b"+ waiting\r\n* OK Still here\r\n")
                             .await
                             .unwrap();
+                        assert!(timeout(Duration::from_millis(150), server.fill_buf())
+                            .await
+                            .is_err());
+                        server.get_mut().write_all(b"* 2 EXISTS\r\n").await.unwrap();
                         line.clear();
                         server.read_line(&mut line).await.unwrap();
                         assert_eq!(line, "DONE\r\n");
