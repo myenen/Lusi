@@ -15,10 +15,10 @@ const responseActions = [
   { mode: 'forward', Icon: Forward },
 ] as const;
 
-export function MessageReader({ message, opened, body, headingRef, inert, onBack, onAction, actionBusy, actionError, canArchive, canTrash, inTrash, onRespond, canRespond, canForward }: MessageActionAvailability & {
+export function MessageReader({ message, opened, conversation, headingRef, inert, onBack, onAction, actionBusy, actionError, canArchive, canTrash, inTrash, onRespond, canRespond, canForward }: MessageActionAvailability & {
   message?: MessageRow;
   opened?: OpenedMessage;
-  body?: ReactNode;
+  conversation?: ReactNode;
   headingRef: RefObject<HTMLHeadingElement | null>;
   inert: boolean;
   onBack: () => void;
@@ -58,7 +58,7 @@ export function MessageReader({ message, opened, body, headingRef, inert, onBack
                 <span className="letter-date">{message.date}</span>
               </div>
             </div>
-            <div className="letter-body">{body}</div>
+            {conversation}
           </article>
         </ScrollArea>
       ) : <div className="reader-empty"><Mail size={32} aria-hidden="true" /><p>{labels.noSelection}</p></div>}

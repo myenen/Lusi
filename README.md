@@ -33,6 +33,8 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 - Mark messages as read when opened, or change their read and starred flags manually. Archive, trash, and restore messages on servers with the required folders and IMAP MOVE support.
 - Send through SMTP with Cc, Bcc, and up to 5 MiB of attachments.
 - Reply, reply all, and forward from the reader. Forwarding includes the original text.
+- Open **Conversation** in the reader to view related messages in date order across the current folder, Inbox, Sent, Archive, and All Mail when available. Expand an entry to read or reply to it. The conversation uses email threading headers and needs a server connection.
+- Type two or more characters in To, Cc, or Bcc to find addresses from locally observed senders and previously sent visible recipients for the active account. In **Settings → Account Center**, save an optional plain-text signature for that account. It is inserted into new drafts, replies, and forwards and can be edited in the composer.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
 - Open **Settings → Account Center** to add an email account or select a saved account. With multiple accounts, you can also switch using the account card at the bottom of the sidebar. Lusi reopens the last selected account. The sidebar provides quick access to system, light, and dark appearance.

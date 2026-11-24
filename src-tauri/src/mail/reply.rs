@@ -90,7 +90,7 @@ fn recipients(addresses: Option<AddressList<'_>>, used: &mut HashSet<String>) ->
         .collect()
 }
 
-fn valid_id(value: &str) -> Option<&str> {
+pub(super) fn valid_id(value: &str) -> Option<&str> {
     let value = value
         .strip_prefix('<')
         .and_then(|value| value.strip_suffix('>'))

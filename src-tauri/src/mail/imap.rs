@@ -867,13 +867,13 @@ async fn store_sent_copy<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::De
     Ok(())
 }
 
-fn advertises(capabilities: &Capabilities, name: &str) -> bool {
+pub(super) fn advertises(capabilities: &Capabilities, name: &str) -> bool {
     capabilities.iter().any(|capability| {
         matches!(capability, Capability::Atom(value) if value.eq_ignore_ascii_case(name))
     })
 }
 
-async fn discover_folders<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+pub(super) async fn discover_folders<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
     session: &mut Session<T>,
     special_use: bool,
 ) -> Result<Vec<MailFolder>, MailError> {
@@ -1236,7 +1236,11 @@ async fn fetch_headers<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debu
     Ok(headers)
 }
 
-fn header_from_fetch(parser: &MessageParser, fetch: &Fetch, key: MessageKey) -> MailHeader {
+pub(super) fn header_from_fetch(
+    parser: &MessageParser,
+    fetch: &Fetch,
+    key: MessageKey,
+) -> MailHeader {
     let parsed = fetch
         .header()
         .and_then(|bytes| parser.parse(&bytes[..bytes.len().min(16_384)]));

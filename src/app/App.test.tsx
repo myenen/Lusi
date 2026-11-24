@@ -1044,6 +1044,66 @@ describe('connected mailbox', () => {
     expect(invoke.mock.calls.filter(([command]) => command === 'send_connected_message')).toHaveLength(1);
   });
 
+  it('opens related Sent messages on demand and replies inline without refetching the selected message', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const sentKey = { uidValidity: 91, uid: 3 };
+    const sentHeader = { ...fixtureHeader, key: sentKey, subject: 'Earlier reply', unread: false };
+    invoke.mockImplementation(async (command, args) => command === 'read_conversation' ? {
+      entries: [
+        { folder: { id: 'INBOX.Outgoing', name: 'Outgoing', kind: 'sent' }, header: sentHeader },
+        { folder: { id: 'INBOX', name: 'Inbox', kind: 'inbox' }, header: fixtureHeader },
+      ],
+      limited: false,
+    } : fallback(command, args));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /Inbox message/ }));
+    await screen.findByText('Inbox body');
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
+    expect(await screen.findByText('Earlier reply')).toBeTruthy();
+    expect(invoke.mock.calls.filter(([command]) => command === 'read_connected_message')).toHaveLength(1);
+    const earlier = screen.getByText('Earlier reply').closest('details')!;
+    expect(earlier.compareDocumentPosition(screen.getByText('Inbox body')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    earlier.open = true;
+    fireEvent(earlier, new Event('toggle'));
+    await within(earlier).findByText('Sent body');
+    expect(invoke).toHaveBeenCalledWith('read_connected_message', { accountId: 1, folder: 'INBOX.Outgoing', key: sentKey, unread: false }, undefined);
+    fireEvent.click(within(earlier).getByRole('button', { name: 'Reply' }));
+    const composer = within(screen.getByRole('dialog', { name: 'Reply' }));
+    expect(composer.getByLabelText<HTMLInputElement>('Subject').value).toBe('Re: Earlier reply');
+    expect(composer.getByRole('textbox', { name: 'Message body' }).textContent).toContain('Sent body');
+  });
+
+  it('saves the active account signature and inserts a keyboard-selected recipient into the current address', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'save_account_signature') return 'Office\nSignature';
+      if (command === 'suggest_recipients') return [{ name: 'Deniz Kaya', address: 'deniz@example.test' }];
+      return fallback(command, args);
+    });
+    render(<App />);
+    await screen.findByRole('button', { name: 'Compose' });
+    const settings = within(openSettings());
+    fireEvent.change(settings.getByLabelText('Account signature'), { target: { value: 'Office\nSignature' } });
+    fireEvent.click(settings.getByRole('button', { name: 'Save signature' }));
+    await settings.findByText('Signature saved.');
+    expect(invoke).toHaveBeenCalledWith('save_account_signature', { accountId: 1, signature: 'Office\nSignature' }, undefined);
+    fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
+    const composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    expect(composer.getByRole('textbox', { name: 'Message body' }).textContent).toContain('OfficeSignature');
+    const recipient = composer.getByRole<HTMLInputElement>('combobox', { name: 'To' });
+    fireEvent.change(recipient, { target: { value: 'first@example.test, Den' } });
+    await composer.findByRole('option', { name: /Deniz Kaya/ });
+    expect(invoke).toHaveBeenCalledWith('suggest_recipients', { accountId: 1, query: 'Den' }, undefined);
+    fireEvent.keyDown(recipient, { key: 'ArrowDown' });
+    fireEvent.keyDown(recipient, { key: 'Enter' });
+    expect(recipient.value).toBe('first@example.test, deniz@example.test, ');
+    expect(composer.queryByRole('listbox')).toBeNull();
+    expect(invoke.mock.calls.some(([command]) => command === 'send_connected_message')).toBe(false);
+  });
+
   it('sends from the composer and uses IMAP actions for the selected message', async () => {
     const invoke = mockMailbox();
     render(<App />);

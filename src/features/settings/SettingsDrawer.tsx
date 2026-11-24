@@ -8,11 +8,14 @@ import type { Preferences } from '../../app/ui-preferences';
 import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
+import { AccountSignature } from './AccountSignature';
 import { AccountSetup } from '../accounts/AccountSetup';
 import { connectGmailAccount, imapErrorMessage, type ConnectedAccount, type ConnectedInbox } from '../accounts/imap-api';
 
-export function SettingsDrawer({ accountId, connectedEmail, accounts, accountsLoadFailed, preferences, themeId, onUpdate, onClose, onAccountChanged, onAccountSwitch, onGoogleReconnected }: {
+export function SettingsDrawer({ accountId, signature, onSignatureSaved, connectedEmail, accounts, accountsLoadFailed, preferences, themeId, onUpdate, onClose, onAccountChanged, onAccountSwitch, onGoogleReconnected }: {
   accountId: number;
+  signature: string;
+  onSignatureSaved: (signature: string) => void;
   connectedEmail: string;
   accounts: ConnectedAccount[];
   accountsLoadFailed: boolean;
@@ -107,6 +110,7 @@ export function SettingsDrawer({ accountId, connectedEmail, accounts, accountsLo
                 {imapErrorMessage(accountError, labels.imapErrors)}
               </p>}
             </div>
+            <AccountSignature signature={signature} accountId={accountId} onSaved={onSignatureSaved} disabled={Boolean(accountOperation)} />
           </section>
           <section className="settings-section" aria-labelledby="system-settings-title">
             <h3 id="system-settings-title"><Settings2 size={17} aria-hidden="true" />{labels.systemSettings}</h3>

@@ -41,6 +41,14 @@ struct OutgoingAttachment {
 }
 
 impl OutgoingMessage {
+    pub(super) fn visible_recipients(&self) -> Vec<String> {
+        self.to
+            .iter()
+            .chain(&self.cc)
+            .map(|address| address.trim().to_owned())
+            .collect()
+    }
+
     pub(super) fn bodies(&self) -> (String, String) {
         match &self.html {
             Some(html) => {

@@ -39,7 +39,7 @@ pub fn open(path: &Path) -> Result<Connection, MailError> {
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let read_version =
         |db: &Connection| db.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0));
-    if read_version(db)? == 12 {
+    if read_version(db)? == 13 {
         return Ok(());
     }
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -55,7 +55,7 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             );
         ",
         )?,
-        1..=12 => {}
+        1..=13 => {}
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     if version < 2 {
@@ -126,7 +126,36 @@ fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     if version < 12 {
         transaction.execute_batch(include_str!("migration-12.sql"))?;
     }
+    if version < 13 {
+        transaction.execute_batch(include_str!("migration-13.sql"))?;
+    }
     transaction.commit()
+}
+
+pub(super) fn signature(db: &Connection, id: AccountId) -> Result<String, MailError> {
+    db.query_row("SELECT signature FROM account WHERE id = ?", [id], |row| {
+        row.get(0)
+    })
+    .optional()
+    .map_err(|_| MailError::Storage)?
+    .ok_or(MailError::NoAccount)
+}
+
+pub(super) fn save_signature(
+    db: &Connection,
+    id: AccountId,
+    signature: &str,
+) -> Result<(), MailError> {
+    let changed = db
+        .execute(
+            "UPDATE account SET signature = ? WHERE id = ?",
+            params![signature, id],
+        )
+        .map_err(|_| MailError::Storage)?;
+    if changed == 0 {
+        return Err(MailError::NoAccount);
+    }
+    Ok(())
 }
 
 pub(super) fn remember_unread(
@@ -267,6 +296,7 @@ pub(super) fn snapshot_for(db: &Connection, id: AccountId) -> Result<Inbox, Mail
     Ok(Inbox {
         account_id: id,
         email: account.email,
+        signature: signature(db, id)?,
         headers,
         can_send,
         oauth_provider,
@@ -451,6 +481,7 @@ pub fn save_new_account(
     Ok(Inbox {
         account_id: id,
         email: details.email,
+        signature: String::new(),
         headers,
         can_send: true,
         oauth_provider: None,
@@ -479,11 +510,13 @@ pub(super) fn save_gmail_account(
         }
     };
     replace_headers(&transaction, id, &headers).map_err(|_| MailError::Storage)?;
+    let signature = signature(&transaction, id)?;
     persist_refresh(&details.email)?;
     transaction.commit().map_err(|_| MailError::Storage)?;
     Ok(Inbox {
         account_id: id,
         email: details.email,
+        signature,
         headers,
         can_send: true,
         oauth_provider: Some(super::discovery::OAuthProvider::Gmail),
@@ -625,6 +658,7 @@ pub(super) fn commit_inbox_sync(
 }
 
 fn replace_headers(db: &Connection, id: AccountId, headers: &[MailHeader]) -> rusqlite::Result<()> {
+    super::correspondents::remember_headers(db, id, headers)?;
     db.execute("DELETE FROM inbox_headers WHERE account_id = ?", [id])?;
     let mut statement = db.prepare(
         "INSERT INTO inbox_headers (account_id, uid_validity, uid, sender, address, subject, sent_at, unread, starred, has_attachments)
@@ -656,7 +690,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mail.sqlite3");
         let mut db = open(&path).unwrap();
-        db.execute_batch("DROP TABLE scheduled_mail; DROP TABLE notification_targets; DROP TABLE inbox_sync_state; DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
+        db.execute_batch("DROP TABLE recent_correspondents; ALTER TABLE account DROP COLUMN signature; DROP TABLE scheduled_mail; DROP TABLE notification_targets; DROP TABLE inbox_sync_state; DROP TABLE opened_messages; ALTER TABLE account DROP COLUMN inbox_unread; PRAGMA user_version = 7;")
             .unwrap();
         let account = |email: &str| Account {
             email: email.into(),

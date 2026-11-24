@@ -3,6 +3,7 @@ import { Fragment, useEffect, useId, useImperativeHandle, useLayoutEffect, useRe
 import { useLabels } from '../../app/i18n';
 import { IconButton } from '../../components/ui/Controls';
 import { imapErrorMessage, scheduleMessage, sendConnectedMessage, type ReplyThread, type SentCopyStatus } from '../accounts/imap-api';
+import { RecipientInput } from './RecipientInput';
 import { ComposerEditor, type DraftEditor } from './ComposerEditor';
 
 export type ResponseMode = 'reply' | 'replyAll' | 'forward';
@@ -184,9 +185,10 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
         <div className="composer-fields-content">
           <div className="composer-headers">{fields.map((field) => {
             const id = `${fieldId}-${field}`;
-            const input = <input id={id} ref={field === 'to' ? toInput : undefined} value={draft[field]}
-              required={field === 'to'} maxLength={field === 'subject' ? 300 : 8192}
-              onChange={(event) => change(field, event.target.value)} />;
+            const input = field === 'subject'
+              ? <input id={id} value={draft.subject} maxLength={300} onChange={(event) => change('subject', event.target.value)} />
+              : <RecipientInput accountId={accountId} id={id} inputRef={field === 'to' ? toInput : undefined}
+                required={field === 'to'} value={draft[field]} onChange={(value) => change(field, value)} />;
             return <Fragment key={field}>
               <label htmlFor={id}>{labels[field]}</label>
               {field === 'to' ? <div className="composer-recipient">

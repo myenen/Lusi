@@ -14,6 +14,7 @@ import { Composer, emptyDraft, type ComposeMode, type ComposerHandle, type Draft
 import { ConnectedMessageBody } from '../features/mail/ConnectedMessageBody';
 import { connectedMessageId, connectedMessageRows, folderDisplayName } from '../features/mail/connected-mail';
 import { MailList } from '../features/mail/MailList';
+import { MessageConversation } from '../features/mail/MessageConversation';
 import { MessageReader } from '../features/mail/MessageReader';
 import { ScheduledMail } from '../features/mail/ScheduledMail';
 import { Sidebar } from '../features/mail/Sidebar';
@@ -149,6 +150,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const { preferences, locale, update } = ui;
   const labels = catalog[locale];
   const accountId = inbox.accountId;
+  const [signature, setSignature] = useState(inbox.signature ?? '');
   const [accounts, setAccounts] = useState<ConnectedAccount[]>();
   const [accountsLoadFailed, setAccountsLoadFailed] = useState(false);
   const [accountsAttempt, setAccountsAttempt] = useState(0);
@@ -224,6 +226,17 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     })[0]);
   const messageId = JSON.stringify([folder, selected?.id]);
   const openedMessage = opened?.id === messageId ? opened.message : undefined;
+  const selectedBody = selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`}
+    accountId={accountId} folder={folder} messageKey={selectedHeader.key} unread={selectedHeader.unread}
+    themeId={themeId} colorScheme={colorScheme}
+    onOpened={(message) => {
+      setOpened({ id: messageId, message });
+      if (message.attachments?.length && !selectedHeader.hasAttachments) {
+        patchHeaders(folder, (current) => current.map((header) => connectedMessageId(header.key) === selected?.id
+          ? { ...header, hasAttachments: true } : header));
+      }
+    }}
+    onSeen={(source, key) => applyHeaderActions(source, [key], 'read')} />;
   const canRespond = inbox.canSend && Boolean(openedMessage?.reply?.to.length);
   const canForward = inbox.canSend && Boolean(openedMessage);
   const visiblePane = scheduledOpen || selected ? mobilePane : 'list';
@@ -497,19 +510,24 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   }
 
   function respond(mode: ResponseMode, trigger: HTMLButtonElement) {
-    if (composer || !selected || !selectedHeader || !openedMessage || (mode === 'forward' ? !canForward : !canRespond)) return;
-    const id = JSON.stringify([messageId, mode]);
+    if (!selectedHeader || !openedMessage) return;
+    respondToMessage(mode, trigger, folder, selectedHeader, openedMessage);
+  }
+
+  function respondToMessage(mode: ResponseMode, trigger: HTMLButtonElement, source: string, header: ImapHeader, message: OpenedMessage) {
+    if (composer || !inbox.canSend || (mode !== 'forward' && !message.reply?.to.length)) return;
+    const id = JSON.stringify([JSON.stringify([source, connectedMessageId(header.key)]), mode]);
     const forward = mode === 'forward';
-    const originalSubject = selectedHeader.subject;
+    const originalSubject = header.subject;
     const prefix = forward ? 'Fwd:' : 'Re:';
     const hasPrefix = forward ? /^(?:fw|fwd):\s*/i.test(originalSubject) : /^re:\s*/i.test(originalSubject);
     const subject = hasPrefix ? originalSubject : `${prefix} ${originalSubject}`.trimEnd();
-    const sender = selected.address && selected.address !== selected.sender
-      ? `${selected.sender} <${selected.address}>` : selected.sender;
-    const originalBody = openedMessage.body?.slice(0, 200_000) ?? '';
+    const senderName = header.sender || header.address || labels.connectedInbox.unknownSender;
+    const sender = header.address && header.address !== senderName ? `${senderName} <${header.address}>` : senderName;
+    const originalBody = message.body?.slice(0, 200_000) ?? '';
     const intro = forward ? labels.forwardedMessage : labels.originalMessage;
     const original = `— ${intro} —\n${labels.from}: ${sender}\n${labels.subject}: ${originalSubject}\n\n${originalBody}`;
-    const reply = openedMessage.reply;
+    const reply = message.reply;
     setDrafts((current) => current[id] ? current : {
       ...current,
       [id]: {
@@ -517,7 +535,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
         to: forward ? '' : reply?.to.join(', ') ?? '',
         cc: mode === 'replyAll' ? reply?.cc.join(', ') ?? '' : '',
         subject: Array.from(subject).slice(0, 240).join(''),
-        body: `\n\n${forward ? original : original.split('\n').map((line) => `> ${line}`).join('\n')}`,
+        body: `\n\n${signature ? `-- \n${signature}\n\n` : ''}${forward ? original : original.split('\n').map((line) => `> ${line}`).join('\n')}`,
         replyThread: forward ? undefined : reply?.thread ?? undefined,
       },
     });
@@ -580,8 +598,11 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     }
     composeTrigger.current = trigger;
     setShowFolders(false);
+    if (signature) {
+      setDrafts((current) => current.new ? current : { ...current, new: { ...emptyDraft, body: `\n\n-- \n${signature}` } });
+    }
     setComposer({ id: 'new', mode: 'new' });
-  }, [composer]);
+  }, [composer, setDrafts, signature]);
 
   function openSettings() {
     if (accountsLoadFailed) {
@@ -735,22 +756,16 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
             onAction={(action) => { if (selectedHeader) void handleAction(action, 'reader', selectedHeader.key); }} actionBusy={actionBusy || busy}
             actionError={actionError?.folder === folder && actionError.source === 'reader' ? imapErrorMessage(actionError.error, labels.imapErrors) : undefined}
             canArchive={canArchive} canTrash={canTrash} inTrash={inTrash}
-            body={selectedHeader && <ConnectedMessageBody key={`${connectedMessageId(selectedHeader.key)}:${readerAttempt}`} accountId={accountId} folder={folder} messageKey={selectedHeader.key}
-              unread={selectedHeader.unread} themeId={themeId} colorScheme={colorScheme}
-              onOpened={(message) => {
-                setOpened({ id: messageId, message });
-                if (message.attachments?.length && !selectedHeader.hasAttachments) {
-                  patchHeaders(folder, (current) => current.map((header) => connectedMessageId(header.key) === selected?.id
-                    ? { ...header, hasAttachments: true } : header));
-                }
-              }}
-              onSeen={(source, key) => applyHeaderActions(source, [key], 'read')} />} />
+            conversation={selectedHeader && <MessageConversation key={messageId} accountId={accountId}
+              folder={folder} messageKey={selectedHeader.key} body={selectedBody} locale={locale} themeId={themeId}
+              colorScheme={colorScheme} onSeen={(source, key) => applyHeaderActions(source, [key], 'read')}
+              onRespond={inbox.canSend ? respondToMessage : undefined} />} />
         </>}
         <IconButton ref={settingsTrigger} className="settings-trigger" label={labels.settings} icon={Settings} tooltip="bottom"
           aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls={settingsOpen ? 'settings-drawer' : undefined}
           disabled={showFolders || quickSwitching} onClick={openSettings} />
       </div>
-      {settingsOpen && <SettingsDrawer accountId={accountId} connectedEmail={inbox.email} preferences={preferences} themeId={themeId} onUpdate={update} onAccountChanged={onAccountChanged}
+      {settingsOpen && <SettingsDrawer accountId={accountId} signature={signature} onSignatureSaved={setSignature} connectedEmail={inbox.email} preferences={preferences} themeId={themeId} onUpdate={update} onAccountChanged={onAccountChanged}
         accounts={savedAccounts} accountsLoadFailed={accountsLoadFailed} onAccountSwitch={switchAccount}
         onGoogleReconnected={inbox.oauthProvider === 'gmail' ? (updated) => {
           older.reset();

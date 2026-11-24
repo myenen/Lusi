@@ -1,4 +1,6 @@
 mod attachments;
+pub(crate) mod conversation;
+pub(crate) mod correspondents;
 mod credentials;
 pub mod discovery;
 mod gmail;
@@ -118,6 +120,7 @@ pub struct OlderMessages {
 pub struct Inbox {
     account_id: AccountId,
     email: String,
+    signature: String,
     headers: Vec<MailHeader>,
     can_send: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,7 +193,7 @@ pub enum FolderKind {
     Custom,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MailFolder {
     id: String,
     name: String,
@@ -459,6 +462,28 @@ pub async fn refresh_connected_inbox(
 }
 
 #[tauri::command]
+pub async fn save_account_signature(
+    app: AppHandle,
+    account_id: AccountId,
+    signature: String,
+) -> Result<String, MailError> {
+    let normalized = signature.replace("\r\n", "\n");
+    if normalized.encode_utf16().count() > 2000
+        || normalized
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+    {
+        return Err(MailError::InvalidMessage);
+    }
+    let signature = normalized.trim_end().to_owned();
+    database(&app, move |db, _| {
+        storage::save_signature(db, account_id, &signature)?;
+        Ok(signature)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn list_connected_folders(
     app: AppHandle,
     account_id: AccountId,
@@ -476,10 +501,12 @@ pub async fn read_connected_folder(
     folder: String,
 ) -> Result<Vec<MailHeader>, MailError> {
     validate_folder(&folder)?;
-    foreground_imap(&app, account_id, None, async |connection| {
+    let headers = foreground_imap(&app, account_id, None, async |connection| {
         imap::folder(connection, &folder).await
     })
-    .await
+    .await?;
+    correspondents::remember_fetched(&app, account_id, &headers).await;
+    Ok(headers)
 }
 
 #[tauri::command]
@@ -493,10 +520,12 @@ pub async fn read_older_connected_messages(
     if before.uid == 0 || before.uid_validity == 0 {
         return Err(MailError::MessageMissing);
     }
-    foreground_imap(&app, account_id, None, async |connection| {
+    let page = foreground_imap(&app, account_id, None, async |connection| {
         imap::older_messages(connection, &folder, before).await
     })
-    .await
+    .await?;
+    correspondents::remember_fetched(&app, account_id, &page.headers).await;
+    Ok(page)
 }
 
 #[tauri::command]
@@ -508,10 +537,12 @@ pub async fn search_connected_messages(
 ) -> Result<SearchPage, MailError> {
     validate_folder(&folder)?;
     request.validate()?;
-    foreground_imap(&app, account_id, None, async |connection| {
+    let page = foreground_imap(&app, account_id, None, async |connection| {
         imap::search_messages(connection, &folder, &request).await
     })
-    .await
+    .await?;
+    correspondents::remember_fetched(&app, account_id, &page.headers).await;
+    Ok(page)
 }
 
 fn validate_folder(folder: &str) -> Result<(), MailError> {
@@ -735,7 +766,9 @@ async fn send_from_account(
         Some(password) => MailAuth::Password(password),
         None => MailAuth::OAuth(app.state::<GmailSession>().access(&email).await?),
     };
+    let recipients = message.visible_recipients();
     let sent = smtp::send(&settings, &email, &auth, message).await?;
+    correspondents::remember_addresses(app, account_id, recipients).await;
     if matches!(auth, MailAuth::OAuth(_)) {
         return Ok(SentCopyStatus::ProviderManaged);
     }

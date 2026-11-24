@@ -57,6 +57,7 @@ export interface ConnectedInbox {
   email: string;
   headers: ImapHeader[];
   canSend: boolean;
+  signature?: string;
   oauthProvider?: 'gmail';
 }
 
@@ -164,6 +165,24 @@ export const searchConnectedMessages = (accountId: number, folder: string, reque
   invoke<MessageSearchPage>('search_connected_messages', { accountId, folder, request });
 export const readConnectedMessage = (accountId: number, folder: string, key: MessageKey, unread: boolean) =>
   invoke<OpenedMessage>('read_connected_message', { accountId, folder, key, unread });
+export interface ConversationEntry {
+  folder: MailFolder;
+  header: ImapHeader;
+}
+export interface Conversation {
+  entries: ConversationEntry[];
+  limited: boolean;
+}
+export interface RecipientSuggestion {
+  address: string;
+  name: string;
+}
+export const readConversation = (accountId: number, folder: string, key: MessageKey) =>
+  invoke<Conversation>('read_conversation', { accountId, folder, key });
+export const suggestRecipients = (accountId: number, query: string) =>
+  invoke<RecipientSuggestion[]>('suggest_recipients', { accountId, query });
+export const saveAccountSignature = (accountId: number, signature: string) =>
+  invoke<string>('save_account_signature', { accountId, signature });
 export const downloadConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
   invoke<AttachmentDownloadResult>('download_connected_attachment', { accountId, folder, key, part });
 export const openConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
