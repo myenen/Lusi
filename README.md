@@ -60,7 +60,7 @@ Lusi sends a desktop notification for new unread messages in the active account 
 
 Closing the window keeps Lusi in the macOS menu bar or the Windows system tray, where it continues checking mail. Click a notification to bring back the window and open the message. The tray also offers inbox, compose, settings, and manual sync shortcuts. Choose **Quit Lusi** to stop background sync. To make closing the window quit Lusi, turn off **Keep checking mail after closing the window** in **Settings → System Settings**.
 
-Use **Select messages** next to Refresh to pick individual messages or select all visible results. The bulk toolbar can mark them as read or unread, archive them, or move them to Trash where the server supports it. In Trash, it can restore them to the Inbox. Changing the search or filter clears the selection.
+Use **Select messages** next to Refresh to pick individual messages or select all visible results. Use the arrow keys to move focus between message rows and press Enter to open the focused message. Hold Shift with an arrow key or click to select a range. Reverse direction with the keyboard to shrink the range. Use Command-click on macOS or Ctrl-click on Windows to toggle individual messages. The bulk toolbar can mark them as read or unread, archive them, or move them to Trash where the server supports it. In Trash, it can restore them to the Inbox. Changing the search or filter clears the selection.
 
 Use **Print preview** in the message reader to review the message before opening the system print dialog. The print layout includes the message and attachment names. Remote images are omitted from the print layout.
 

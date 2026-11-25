@@ -476,6 +476,8 @@ label:hover .lusi-checkbox input:enabled + .lusi-checkbox-face,
 .message-row:hover { background: var(--control); }
 .message-row:is([aria-current], [data-bulk-selected="true"]) { background: var(--selected); border-color: var(--selected-edge); box-shadow: var(--selection-shadow); }
 .message-row-selectable { grid-template-columns: 18px 36px minmax(0, 1fr) auto; cursor: pointer; }
+/* Handle modified pointer clicks on the label before it activates the checkbox. */
+.message-row-selectable .lusi-checkbox input { pointer-events: none; }
 .message-row:focus-visible { outline-offset: -2px; }
 .avatar { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: var(--radius-icon); background: var(--avatar-violet-background); color: var(--avatar-violet-text); font-weight: 700; font-size: .875rem; }
 .avatar[data-tone="blue"] { background: var(--avatar-blue-background); color: var(--avatar-blue-text); }

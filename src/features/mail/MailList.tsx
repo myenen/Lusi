@@ -1,5 +1,5 @@
 import { Archive, Inbox, ListChecks, Mail, MailOpen, Menu, Paperclip, RefreshCw, RotateCcw, Search, Star, Trash2 } from 'lucide-react';
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
 import { useLabels } from '../../app/i18n';
 import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton, SegmentedFilter, Toolbar, type Filter } from '../../components/ui/Controls';
@@ -8,6 +8,13 @@ import { SelectBox } from '../../components/ui/SelectBox';
 import type { MessageAction } from '../accounts/imap-api';
 import { MessageActions, type MessageActionAvailability } from './MessageActions';
 import type { MessageRow } from './connected-mail';
+
+interface SelectionRange {
+  anchor: string;
+  edge: string;
+  original: ReadonlySet<string>;
+  result: ReadonlySet<string>;
+}
 
 export function MailList({
   title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen,
@@ -43,6 +50,7 @@ export function MailList({
   const labels = useLabels();
   const selectionButton = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const selectionRange = useRef<SelectionRange | undefined>(undefined);
   const loadMarker = useRef<HTMLLIElement>(null);
   const scrollAnchor = useRef<{ cursor: string; height: number; top: number } | undefined>(undefined);
   const cursor = older?.cursor;
@@ -81,6 +89,76 @@ export function MailList({
     scrollAnchor.current = undefined;
   }, [cursor, oldestFirst, older?.searchResults]);
 
+  function rowControl(id: string) {
+    const row = Array.from(list.current?.querySelectorAll<HTMLLIElement>('[data-message-id]') ?? [])
+      .find((item) => item.dataset.messageId === id);
+    return row?.querySelector<HTMLButtonElement | HTMLInputElement>('button.message-row, input[type="checkbox"]');
+  }
+
+  useLayoutEffect(() => {
+    const range = selectionRange.current;
+    if (range && range.result === selection) rowControl(range.edge)?.focus();
+  }, [selection]);
+
+  function selectRange(anchor: number, edge: number, original: ReadonlySet<string> = new Set()) {
+    const next = new Set(original);
+    for (const { id } of messages.slice(Math.min(anchor, edge), Math.max(anchor, edge) + 1)) next.add(id);
+    selectionRange.current = { anchor: messages[anchor].id, edge: messages[edge].id, original, result: next };
+    onSelectionChange(next);
+  }
+
+  function toggleMessage(id: string, checked?: boolean) {
+    const next = new Set(selection ?? messages.filter((message) => message.id === selectedId).map((message) => message.id));
+    if (checked ?? !next.has(id)) next.add(id);
+    else next.delete(id);
+    selectionRange.current = { anchor: id, edge: id, original: next, result: next };
+    onSelectionChange(next);
+  }
+
+  function handleModifiedClick(event: MouseEvent<HTMLElement>, id: string) {
+    if (event.defaultPrevented || event.altKey || (!event.shiftKey && !event.metaKey && !event.ctrlKey)) return false;
+    event.preventDefault();
+    if (busy) return true;
+
+    if (event.shiftKey) {
+      const previous = selectionRange.current;
+      const active = previous && previous.result === selection ? previous : undefined;
+      const edge = messages.findIndex((message) => message.id === id);
+      const anchor = messages.findIndex((message) => message.id === (active?.anchor ?? selectedId));
+      selectRange(anchor < 0 ? edge : anchor, edge, active?.original ?? selection);
+    } else {
+      toggleMessage(id);
+    }
+    return true;
+  }
+
+  function handleArrowKey(event: KeyboardEvent<HTMLElement>) {
+    if (foldersOpen || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey
+      || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') || !(event.target instanceof HTMLElement)) return;
+    const target = event.target;
+    const viewportFocused = target === list.current;
+    const rowId = target.matches('button.message-row, input[type="checkbox"]')
+      ? target.closest<HTMLLIElement>('[data-message-id]')?.dataset.messageId
+      : viewportFocused ? selectedId : undefined;
+    const rowIndex = messages.findIndex(({ id }) => id === rowId);
+    if ((rowIndex < 0 && !viewportFocused) || !messages.length || (busy && (selection || event.shiftKey))) return;
+
+    event.preventDefault();
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    const edge = rowIndex < 0 ? (delta > 0 ? 0 : messages.length - 1)
+      : Math.max(0, Math.min(messages.length - 1, rowIndex + delta));
+    if (!event.shiftKey) {
+      rowControl(messages[edge].id)?.focus();
+      return;
+    }
+
+    const previous = selectionRange.current;
+    const active = previous && previous.result === selection && previous.edge === rowId ? previous : undefined;
+    const anchor = messages.findIndex(({ id }) => id === active?.anchor);
+    if (anchor >= 0 && edge === rowIndex) return;
+    selectRange(anchor >= 0 ? anchor : Math.max(0, rowIndex), edge, anchor >= 0 ? active?.original : selection);
+  }
+
   const selectedMessages = messages.filter(({ id }) => selection?.has(id));
   const allSelected = messages.length > 0 && selectedMessages.length === messages.length;
   const bulkActions = [
@@ -109,7 +187,11 @@ export function MailList({
   return (
     <section id="message-pane" className="mail-list glass-panel" aria-label={labels.messages} inert={foldersOpen}
       onKeyDown={(event) => {
-        if (event.key !== 'Escape' || !selection || event.defaultPrevented) return;
+        if (event.key !== 'Escape') {
+          handleArrowKey(event);
+          return;
+        }
+        if (!selection || event.defaultPrevented) return;
         event.preventDefault();
         onSelectionChange(undefined);
         selectionButton.current?.focus();
@@ -128,7 +210,7 @@ export function MailList({
         <div className="list-options">
           <SelectBox className="list-sort" label={labels.sortMessages} value={oldestFirst ? 'oldest' : 'newest'}
             options={[{ value: 'newest', label: labels.newestFirst }, { value: 'oldest', label: labels.oldestFirst }]}
-            onChange={(value) => onSort(value === 'oldest')} />
+            onChange={(value) => { selectionRange.current = undefined; onSort(value === 'oldest'); }} />
           <IconButton ref={selectionButton} label={labels.selectMessages} icon={ListChecks}
             aria-pressed={Boolean(selection)} disabled={!messages.length && !selection}
             onClick={() => onSelectionChange(selection ? undefined : new Set())} />
@@ -176,21 +258,21 @@ export function MailList({
                   </span>}
                 </span>
             </>;
-            return <li key={message.id} className="message-list-item">
+            return <li key={message.id} className="message-list-item" data-message-id={message.id}>
               {selection ? (
-                <label className="message-row message-row-selectable" data-unread={message.unread} data-bulk-selected={selection.has(message.id)}>
-                  <Checkbox aria-label={labels.selectMessage(message.subject)} disabled={busy}
-                    checked={selection.has(message.id)} onCheckedChange={(checked) => {
-                      const next = new Set(selection);
-                      if (checked) next.add(message.id);
-                      else next.delete(message.id);
-                      onSelectionChange(next);
-                    }} />
+                <label className="message-row message-row-selectable" data-unread={message.unread} data-bulk-selected={selection.has(message.id)}
+                  onClick={(event) => handleModifiedClick(event, message.id)}>
+                  <Checkbox aria-label={labels.selectMessage(message.subject)} aria-keyshortcuts="ArrowDown ArrowUp Shift+ArrowDown Shift+ArrowUp" disabled={busy}
+                    checked={selection.has(message.id)} onCheckedChange={(checked) => toggleMessage(message.id, checked)} />
                   {content}
                 </label>
               ) : <>
                 <button type="button" className="message-row" data-unread={message.unread} aria-current={message.id === selectedId ? 'true' : undefined}
-                  onClick={(event) => onSelect(message.id, event.currentTarget)}>
+                  aria-keyshortcuts="ArrowDown ArrowUp Shift+ArrowDown Shift+ArrowUp" onClick={(event) => {
+                    if (handleModifiedClick(event, message.id)) return;
+                    event.currentTarget.focus();
+                    onSelect(message.id, event.currentTarget);
+                  }}>
                   <span className="unread-dot" aria-hidden="true" />
                   {content}
                 </button>

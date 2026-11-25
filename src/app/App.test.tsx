@@ -618,6 +618,83 @@ describe('connected mailbox', () => {
     expect(invoke).toHaveBeenCalledWith('switch_connected_account', { accountId: second.id }, undefined);
   });
 
+  it('extends and shrinks bulk selection with Shift and the arrow keys without opening other messages', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const headers = ['Inbox message', 'Second message', 'Third message'].map((subject, index) => ({
+      ...fixtureHeader, key: { ...fixtureKey, uid: fixtureKey.uid - index }, subject, unread: false,
+    }));
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox' || command === 'refresh_connected_inbox') {
+        return { accountId: 1, email: 'mail@example.test', headers, canSend: true };
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    const row = await screen.findByRole('button', { name: /Inbox message/ });
+    await screen.findByRole('button', { name: 'Refresh messages', busy: false });
+    fireEvent.click(row);
+    const reader = within(screen.getByRole('main', { name: 'Message reader' }));
+    await reader.findByText('Inbox body');
+
+    const search = screen.getByRole('searchbox');
+    fireEvent.keyDown(search, { key: 'ArrowDown', shiftKey: true });
+    expect(screen.queryByText('2 selected')).toBeNull();
+
+    fireEvent.keyDown(row, { key: 'ArrowDown', shiftKey: true });
+    const first = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Select Inbox message' });
+    const second = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Select Second message' });
+    const third = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Select Third message' });
+    expect([first.checked, second.checked, third.checked]).toEqual([true, true, false]);
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'ArrowDown', shiftKey: true });
+    expect(screen.getByText('3 selected')).toBeTruthy();
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowUp', shiftKey: true });
+    expect([first.checked, second.checked, third.checked]).toEqual([true, true, false]);
+    expect(document.activeElement).toBe(second);
+    expect(reader.getByRole('heading', { name: 'Inbox message' })).toBeTruthy();
+    expect(invoke.mock.calls.filter(([command]) => command === 'read_connected_message')).toHaveLength(1);
+
+    fireEvent.keyDown(second, { key: 'Escape' });
+    expect(screen.queryByRole('checkbox', { name: 'Select Second message' })).toBeNull();
+  });
+
+  it('moves row focus with the arrow keys and uses modified clicks for range selection and toggling', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const headers = ['Inbox message', 'Second message', 'Third message'].map((subject, index) => ({
+      ...fixtureHeader, key: { ...fixtureKey, uid: fixtureKey.uid - index }, subject, unread: false,
+    }));
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox' || command === 'refresh_connected_inbox') {
+        return { accountId: 1, email: 'mail@example.test', headers, canSend: true };
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    const first = await screen.findByRole('button', { name: /Inbox message/ });
+    const second = screen.getByRole('button', { name: /Second message/ });
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(second);
+    expect(invoke.mock.calls.some(([command]) => command === 'read_connected_message')).toBe(false);
+    fireEvent.keyDown(second, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(first);
+
+    // In the browser, Enter generates a click on the focused native button.
+    fireEvent.click(first, { detail: 0 });
+    await screen.findByText('Inbox body');
+    fireEvent.click(screen.getByRole('button', { name: /Third message/ }), { shiftKey: true });
+    expect(screen.getByText('3 selected')).toBeTruthy();
+    const checkboxes = screen.getAllByRole<HTMLInputElement>('checkbox');
+    fireEvent.click(checkboxes[1].closest('label')!, { metaKey: true });
+    expect(checkboxes.map(({ checked }) => checked)).toEqual([true, false, true]);
+    fireEvent.click(checkboxes[1].closest('label')!, { ctrlKey: true });
+    expect(checkboxes.map(({ checked }) => checked)).toEqual([true, true, true]);
+    expect(invoke.mock.calls.filter(([command]) => command === 'read_connected_message')).toHaveLength(1);
+  });
+
   it('selects visible messages and keeps unconfirmed messages selected after a bulk action', async () => {
     const invoke = mockMailbox();
     const fallback = invoke.getMockImplementation()!;
