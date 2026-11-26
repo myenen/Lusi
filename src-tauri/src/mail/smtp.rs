@@ -1,6 +1,7 @@
 use super::{
-    html::sanitize_outgoing_html, reply::ReplyThread, setup_diagnostics, Account, MailAuth,
-    MailError,
+    html::{outgoing_html, InlineImage},
+    reply::ReplyThread,
+    setup_diagnostics, Account, MailAuth, MailError,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use lettre::transport::smtp::{
@@ -50,9 +51,14 @@ impl OutgoingMessage {
     }
 
     pub(super) fn bodies(&self) -> (String, String) {
+        let (plain, html, _) = self.render_bodies(false);
+        (plain, html)
+    }
+
+    fn render_bodies(&self, embed_images: bool) -> (String, String, Vec<InlineImage>) {
         match &self.html {
             Some(html) => {
-                let html = sanitize_outgoing_html(html);
+                let (html, images) = outgoing_html(html, embed_images);
                 let mut text_markup = html.clone();
                 // The MIME decoder recognizes paragraph and line breaks. Keep editor
                 // line blocks and list items on separate lines in the fallback too.
@@ -67,11 +73,11 @@ impl OutgoingMessage {
                 ] {
                     text_markup = text_markup.replace(block_end, "</p>");
                 }
-                (html_to_text(&text_markup), html)
+                (html_to_text(&text_markup), html, images)
             }
             None => {
                 let html = text_to_html(&self.body);
-                (self.body.clone(), html)
+                (self.body.clone(), html, Vec::new())
             }
         }
     }
@@ -127,10 +133,20 @@ impl OutgoingMessage {
         for address in &self.bcc {
             builder = builder.bcc(mailbox(address)?);
         }
-        let (plain, html) = self.bodies();
-        let body = MultiPart::alternative()
-            .singlepart(SinglePart::plain(plain))
-            .singlepart(SinglePart::html(html));
+        let (plain, html, images) = self.render_bodies(true);
+        let alternative = MultiPart::alternative().singlepart(SinglePart::plain(plain));
+        let body = if images.is_empty() {
+            alternative.singlepart(SinglePart::html(html))
+        } else {
+            let mut related = MultiPart::related().singlepart(SinglePart::html(html));
+            for image in images {
+                let content_type = ContentType::parse(&format!("image/{}", image.subtype))
+                    .map_err(|_| MailError::InvalidMessage)?;
+                related = related
+                    .singlepart(Attachment::new_inline(image.id).body(image.bytes, content_type));
+            }
+            alternative.multipart(related)
+        };
         if self.attachments.is_empty() {
             return builder
                 .multipart(body)
@@ -410,6 +426,40 @@ mod tests {
             .unwrap()
             .contains("<body>Merhaba</body>"));
         assert_eq!(message.envelope().to().len(), 2);
+    }
+
+    #[test]
+    fn embeds_raster_images_as_related_mime_and_filters_unsafe_image_sources() {
+        let encoded = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+        let outgoing: OutgoingMessage = serde_json::from_value(serde_json::json!({
+            "to": ["to@example.test"], "cc": [], "bcc": [], "subject": "Signature",
+            "body": "",
+            "html": format!(r#"<p><strong>Office</strong></p><img alt="Logo" src="data:image/gif;base64,{encoded}" onerror="steal()">
+                <img src="http://example.test/clear.png"><img src="data:image/svg+xml;base64,PHN2Zz4=">
+                <img src="data:image/png;base64,{encoded}"><script>Injected</script>"#),
+            "attachments": [{"name": "notes.txt", "data": "SGVsbG8="}],
+        })).unwrap();
+        let (_, preview) = outgoing.bodies();
+        assert!(preview.contains(&format!("data:image/gif;base64,{encoded}")));
+        let data = outgoing.build("mail@example.test").unwrap().formatted();
+        let message = mail_parser::MessageParser::default().parse(&data).unwrap();
+        let mime = String::from_utf8(data.clone()).unwrap();
+        assert!(mime.contains("multipart/mixed") && mime.contains("multipart/related"));
+        let markup = message.body_html(0).unwrap();
+        assert!(
+            markup.contains("cid:lusi-image-1@inline")
+                && markup.contains("<strong>Office</strong>")
+        );
+        for unsafe_value in ["onerror", "clear.png", "svg+xml", "Injected", "data:"] {
+            assert!(!markup.contains(unsafe_value), "{unsafe_value}");
+        }
+        let inline = message
+            .root()
+            .parts()
+            .find(|part| part.content_id() == Some("lusi-image-1@inline"))
+            .unwrap();
+        assert_eq!(inline.decoded().as_ref(), STANDARD.decode(encoded).unwrap());
+        assert!(message.body_text(0).unwrap().contains("Office"));
     }
 
     #[test]

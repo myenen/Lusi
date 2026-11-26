@@ -3,7 +3,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use cssparser::{parse_important, Parser};
 use mail_parser::{MessageParser, MessageRef, PartKind};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::HashMap, sync::Mutex};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 const MAX_EMBEDDED_BYTES: usize = 512 * 1024;
 const MAX_EMBEDDED_MARKUP: usize = 1024 * 1024;
@@ -19,8 +23,20 @@ impl HtmlBody {
     }
 }
 
+pub(super) struct InlineImage {
+    pub(super) id: String,
+    pub(super) subtype: &'static str,
+    pub(super) bytes: Vec<u8>,
+}
+
 pub(super) fn sanitize_outgoing_html(html: &str) -> String {
-    Builder::default()
+    outgoing_html(html, false).0
+}
+
+pub(super) fn outgoing_html(html: &str, embed_images: bool) -> (String, Vec<InlineImage>) {
+    let images = Arc::new(Mutex::new((MAX_EMBEDDED_BYTES, Vec::new())));
+    let collected = Arc::clone(&images);
+    let markup = Builder::default()
         .tags(
             [
                 "a",
@@ -37,6 +53,7 @@ pub(super) fn sanitize_outgoing_html(html: &str) -> String {
                 "h3",
                 "hr",
                 "i",
+                "img",
                 "li",
                 "ol",
                 "p",
@@ -57,6 +74,7 @@ pub(super) fn sanitize_outgoing_html(html: &str) -> String {
             [
                 ("a", ["href"].into()),
                 ("font", ["color", "face", "size"].into()),
+                ("img", ["alt", "height", "src", "width"].into()),
             ]
             .into(),
         )
@@ -78,10 +96,54 @@ pub(super) fn sanitize_outgoing_html(html: &str) -> String {
             ]
             .into(),
         )
-        .url_schemes(["https", "http", "mailto"].into())
+        .url_schemes(["https", "http", "mailto", "data"].into())
         .url_relative(UrlRelative::Deny)
+        .attribute_filter(move |tag, attribute, value| {
+            if (tag, attribute) == ("a", "href") && Url::parse(value).ok()?.scheme() == "data" {
+                return None;
+            }
+            if (tag, attribute) != ("img", "src") {
+                return Some(Cow::Borrowed(value));
+            }
+            let url = Url::parse(value).ok()?;
+            if url.scheme() == "https"
+                && url.domain().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+            {
+                return Some(Cow::Owned(url.into()));
+            }
+            let (mime, encoded) = value.strip_prefix("data:image/")?.split_once(";base64,")?;
+            let subtype = match mime {
+                "png" => "png",
+                "jpeg" => "jpeg",
+                "gif" => "gif",
+                _ => return None,
+            };
+            let mut images = collected.lock().ok()?;
+            if encoded.len() > images.0.div_ceil(3) * 4 {
+                return None;
+            }
+            let bytes = STANDARD.decode(encoded).ok()?;
+            if !is_raster(subtype, &bytes) {
+                return None;
+            }
+            images.0 = images.0.checked_sub(bytes.len())?;
+            if !embed_images {
+                return Some(Cow::Borrowed(value));
+            }
+            let id = format!("lusi-image-{}@inline", images.1.len() + 1);
+            let source = format!("cid:{id}");
+            images.1.push(InlineImage { id, subtype, bytes });
+            Some(Cow::Owned(source))
+        })
         .clean(html)
-        .to_string()
+        .to_string();
+    let parts = images
+        .lock()
+        .map(|mut state| std::mem::take(&mut state.1))
+        .unwrap_or_default();
+    (markup, parts)
 }
 
 pub(super) fn read_body(bytes: &[u8]) -> (Option<String>, Option<HtmlBody>) {
@@ -129,14 +191,7 @@ fn embedded_images(message: &MessageRef<'_>) -> HashMap<String, String> {
             continue;
         }
         let data = part.decoded();
-        let valid = match subtype.as_str() {
-            "png" => data.starts_with(b"\x89PNG\r\n\x1a\n"),
-            "jpeg" => data.starts_with(b"\xff\xd8\xff"),
-            "gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
-            "webp" => data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP"),
-            _ => false,
-        };
-        if valid && data.len() <= remaining {
+        if is_raster(&subtype, &data) && data.len() <= remaining {
             remaining -= data.len();
             images.insert(
                 id.to_owned(),
@@ -145,6 +200,16 @@ fn embedded_images(message: &MessageRef<'_>) -> HashMap<String, String> {
         }
     }
     images
+}
+
+fn is_raster(subtype: &str, data: &[u8]) -> bool {
+    match subtype {
+        "png" => data.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpeg" => data.starts_with(b"\xff\xd8\xff"),
+        "gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+        "webp" => data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP"),
+        _ => false,
+    }
 }
 
 fn sanitize(html: &str, images: HashMap<String, String>) -> String {

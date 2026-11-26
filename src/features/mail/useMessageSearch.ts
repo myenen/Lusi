@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { searchConnectedMessages, type ImapHeader, type MessageSearchPage } from '../accounts/imap-api';
+import { searchConnectedMessages, type GmailCategory, type ImapHeader, type MessageSearchPage } from '../accounts/imap-api';
 
 type SearchResult = Partial<MessageSearchPage> & {
   loadingMore?: boolean;
@@ -7,10 +7,10 @@ type SearchResult = Partial<MessageSearchPage> & {
 };
 
 export function useMessageSearch(
-  accountId: number, folder: string, query: string, unreadOnly: boolean, oldestFirst: boolean,
+  accountId: number, folder: string, query: string, unreadOnly: boolean, oldestFirst: boolean, category?: GmailCategory,
 ) {
   const [attempt, setAttempt] = useState(0);
-  const criteria = useMemo(() => ({ query, unreadOnly, oldestFirst }), [query, unreadOnly, oldestFirst]);
+  const criteria = useMemo(() => ({ query, unreadOnly, oldestFirst, ...(category && { category }) }), [query, unreadOnly, oldestFirst, category]);
   const scope = useMemo(() => ({ accountId, folder, criteria, attempt }), [accountId, folder, criteria, attempt]);
   type SearchRun = {
     scope: typeof scope;
@@ -19,10 +19,14 @@ export function useMessageSearch(
   };
   const current = useRef<SearchRun | undefined>(undefined);
   const [state, setState] = useState<{ scope: typeof scope; result: SearchResult }>();
-  const displayed = state?.scope === scope ? state.result : undefined;
+  const active = Boolean(query || category);
+  const currentResult = state?.scope === scope ? state.result : undefined;
+  const previousCategory = category && state?.scope.accountId === accountId
+    && state.scope.folder === folder && state.scope.criteria === criteria ? state.result.headers : undefined;
+  const displayed = currentResult ?? (previousCategory && { headers: previousCategory });
 
   useEffect(() => {
-    if (!criteria.query) return;
+    if (!active) return;
     const run: SearchRun = { scope, result: {} };
     current.current = run;
     const timer = window.setTimeout(async () => {
@@ -38,16 +42,16 @@ export function useMessageSearch(
         run.request = undefined;
         if (current.current === run) setState({ scope, result: run.result });
       }
-    }, 320);
+    }, criteria.query ? 320 : 0);
     return () => {
       window.clearTimeout(timer);
       current.current = undefined;
     };
-  }, [scope, accountId, folder, criteria]);
+  }, [scope, accountId, folder, criteria, active]);
 
   async function loadMore() {
     const run = current.current;
-    const cursor = displayed?.nextCursor;
+    const cursor = currentResult?.nextCursor;
     if (run?.scope !== scope || !cursor || run.request) return;
     run.request = [];
     run.result = { ...run.result, loadingMore: true, error: undefined };
@@ -76,7 +80,7 @@ export function useMessageSearch(
 
   return {
     ...displayed,
-    pending: Boolean(query && !displayed),
+    pending: active && !currentResult,
     loadMore, patch,
     retry: () => setAttempt((value) => value + 1),
   };

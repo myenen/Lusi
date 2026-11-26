@@ -184,15 +184,18 @@ mod tests {
         )
         .unwrap();
         remember(&db, 2, [("deniz-other@example.test", "Deniz Other", 40)]).unwrap();
-        super::super::storage::save_signature(&db, 1, "Office\nSignature").unwrap();
+        super::super::storage::save_signature(&db, 1, "Office\nSignature", false).unwrap();
         drop(db);
 
         let db = super::super::storage::open(&path).unwrap();
         assert_eq!(
             super::super::storage::signature(&db, 1).unwrap(),
-            "Office\nSignature"
+            ("Office\nSignature".into(), false)
         );
-        assert_eq!(super::super::storage::signature(&db, 2).unwrap(), "");
+        assert_eq!(
+            super::super::storage::signature(&db, 2).unwrap(),
+            ("".into(), false)
+        );
         let result = suggestions(&db, 1, "den").unwrap();
         assert_eq!(
             result

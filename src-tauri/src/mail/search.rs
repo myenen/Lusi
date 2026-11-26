@@ -1,10 +1,33 @@
 use super::{MailError, MessageKey};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum GmailCategory {
+    Primary,
+    Promotions,
+    Social,
+    Updates,
+    Forums,
+}
+
+impl GmailCategory {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Promotions => "promotions",
+            Self::Social => "social",
+            Self::Updates => "updates",
+            Self::Forums => "forums",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SearchRequest {
     pub(super) query: String,
+    pub(super) category: Option<GmailCategory>,
     pub(super) unread_only: bool,
     pub(super) oldest_first: bool,
     pub(super) cursor: Option<MessageKey>,
@@ -20,7 +43,7 @@ impl SearchRequest {
             return Err(MailError::InvalidSettings);
         }
         let query = self.query.trim();
-        if query.is_empty() || query.len() > 1024 {
+        if (query.is_empty() && self.category.is_none()) || query.len() > 1024 {
             return Err(MailError::InvalidSettings);
         }
         self.query = query.to_owned();
@@ -43,6 +66,7 @@ mod tests {
     fn rejects_multiline_queries_and_invalid_cursors() {
         let mut request = SearchRequest {
             query: "name\r\n".into(),
+            category: None,
             unread_only: false,
             oldest_first: false,
             cursor: None,

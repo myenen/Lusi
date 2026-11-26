@@ -1,4 +1,4 @@
-import { Bell, Check, Plus, Settings2, UserRound, X } from 'lucide-react';
+import { Bell, Check, Plus, Settings2, Signature, UserRound, X } from 'lucide-react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useLabels } from '../../app/i18n';
 import { LanguageSelect } from '../../app/LanguageSelect';
@@ -8,14 +8,15 @@ import type { Preferences } from '../../app/ui-preferences';
 import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
-import { AccountSignature } from './AccountSignature';
+import { AccountSignature, type SignatureSetting } from './AccountSignature';
+import { SettingsSection } from './SettingsSection';
 import { AccountSetup } from '../accounts/AccountSetup';
 import { connectGmailAccount, imapErrorMessage, type ConnectedAccount, type ConnectedInbox } from '../accounts/imap-api';
 
 export function SettingsDrawer({ accountId, signature, onSignatureSaved, connectedEmail, accounts, accountsLoadFailed, preferences, themeId, onUpdate, onClose, onAccountChanged, onAccountSwitch, onGoogleReconnected }: {
   accountId: number;
-  signature: string;
-  onSignatureSaved: (signature: string) => void;
+  signature: SignatureSetting;
+  onSignatureSaved: (signature: SignatureSetting) => void;
   connectedEmail: string;
   accounts: ConnectedAccount[];
   accountsLoadFailed: boolean;
@@ -76,13 +77,10 @@ export function SettingsDrawer({ accountId, signature, onSignatureSaved, connect
           <IconButton ref={closeButton} label={labels.closeSettings} icon={X} onClick={close} disabled={Boolean(accountOperation)} />
         </header>
         <ScrollArea className="settings-scroll" contentClassName="settings-body" label={labels.settings}>
-          <section className="settings-section" aria-labelledby="account-center-title">
-            <header className="settings-section-heading">
-              <h3 id="account-center-title"><UserRound size={17} aria-hidden="true" />{labels.accountCenter}</h3>
+          <SettingsSection id="account-center" title={labels.accountCenter} icon={UserRound}>
+            <div className="settings-accounts">
               <IconButton ref={addButton} className="settings-add-account" label={labels.accountSetup.addAccount}
                 icon={Plus} aria-haspopup="dialog" disabled={Boolean(accountOperation)} onClick={() => setAddingAccount(true)} />
-            </header>
-            <div className="settings-accounts">
               <div className="settings-account-list" role="group" aria-label={labels.selectAccount}>
                 {accounts.map(({ id, email }) => (
                   <button key={id} type="button" className="settings-account" aria-pressed={id === accountId}
@@ -110,10 +108,11 @@ export function SettingsDrawer({ accountId, signature, onSignatureSaved, connect
                 {imapErrorMessage(accountError, labels.imapErrors)}
               </p>}
             </div>
+          </SettingsSection>
+          <SettingsSection id="account-signature" title={labels.accountSignature} icon={Signature}>
             <AccountSignature signature={signature} accountId={accountId} onSaved={onSignatureSaved} disabled={Boolean(accountOperation)} />
-          </section>
-          <section className="settings-section" aria-labelledby="system-settings-title">
-            <h3 id="system-settings-title"><Settings2 size={17} aria-hidden="true" />{labels.systemSettings}</h3>
+          </SettingsSection>
+          <SettingsSection id="system-settings" title={labels.systemSettings} icon={Settings2}>
             <div className="settings-system">
               <p className="settings-appearance-label" aria-hidden="true">{labels.appearance}</p>
               <ThemeSelect theme={preferences.theme} onChange={(theme) => onUpdate({ theme })} disabled={false} />
@@ -125,9 +124,8 @@ export function SettingsDrawer({ accountId, signature, onSignatureSaved, connect
                 {labels.keepRunningOnClose}
               </label>
             </div>
-          </section>
-          <section className="settings-section" aria-labelledby="notification-settings-title">
-            <h3 id="notification-settings-title"><Bell size={17} aria-hidden="true" />{labels.notifications}</h3>
+          </SettingsSection>
+          <SettingsSection id="notification-settings" title={labels.notifications} icon={Bell}>
             <div className="settings-system notification-settings">
               <label>
                 <Checkbox checked={preferences.mailNotifications}
@@ -140,7 +138,7 @@ export function SettingsDrawer({ accountId, signature, onSignatureSaved, connect
                 {labels.showNotificationDetails}
               </label>
             </div>
-          </section>
+          </SettingsSection>
         </ScrollArea>
       </div>
     </dialog>

@@ -8,8 +8,9 @@ import {
   imapErrorMessage, inboxFolder, listConnectedAccounts, listConnectedFolders, loadConnectedInbox, onInboxSync, onNotificationOpen, onNotificationReady, readConnectedFolder,
   onScheduledChanged, takeNotificationOpen,
   refreshConnectedInbox, switchConnectedAccount, updateConnectedMessage, updateConnectedMessages,
-  type ConnectedAccount, type ConnectedInbox, type ImapHeader, type MessageAction, type MessageKey, type NotificationOpen, type OpenedMessage,
+  type ConnectedAccount, type ConnectedInbox, type GmailCategory, type ImapHeader, type MessageAction, type MessageKey, type NotificationOpen, type OpenedMessage,
 } from '../features/accounts/imap-api';
+import { draftBodyWithSignature } from '../features/mail/compose-html';
 import { Composer, emptyDraft, type ComposeMode, type ComposerHandle, type Draft, type ResponseMode } from '../features/mail/Composer';
 import { ConnectedMessageBody } from '../features/mail/ConnectedMessageBody';
 import { connectedMessageId, connectedMessageRows, folderDisplayName } from '../features/mail/connected-mail';
@@ -150,7 +151,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const { preferences, locale, update } = ui;
   const labels = catalog[locale];
   const accountId = inbox.accountId;
-  const [signature, setSignature] = useState(inbox.signature ?? '');
+  const [signature, setSignature] = useState({ value: inbox.signature ?? '', isHtml: inbox.signatureIsHtml ?? false });
   const [accounts, setAccounts] = useState<ConnectedAccount[]>();
   const [accountsLoadFailed, setAccountsLoadFailed] = useState(false);
   const [accountsAttempt, setAccountsAttempt] = useState(0);
@@ -172,6 +173,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const [inboxError, setInboxError] = useState<unknown>();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [gmailCategory, setGmailCategory] = useState<GmailCategory>();
   const [oldestFirst, setOldestFirst] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
   const [notificationHeader, setNotificationHeader] = useState<ImapHeader>();
@@ -206,8 +208,11 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const busy = isInbox ? startupSyncing || inboxRefreshing : !result;
   const failure = isInbox ? inboxError : result && 'error' in result ? result.error : undefined;
   const searchText = query.trim();
-  const search = useMessageSearch(accountId, folder, searchText, filter === 'unread', oldestFirst);
-  const headers = search.headers ?? loadedHeaders;
+  const hasGmailCategories = isInbox && inbox.oauthProvider === 'gmail';
+  const category = hasGmailCategories ? gmailCategory : undefined;
+  const serverFiltered = Boolean(searchText || category);
+  const search = useMessageSearch(accountId, folder, searchText, filter === 'unread', oldestFirst, category);
+  const headers = search.headers ?? (category ? emptyHeaders : loadedHeaders);
   const needle = searchText.toLocaleLowerCase(locale);
   const rows = useMemo(() => connectedMessageRows(headers, locale, { unknownSender: labels.connectedInbox.unknownSender, untitled: labels.untitled }),
     [headers, labels, locale]);
@@ -328,6 +333,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     setComposer(undefined);
     setQuery('');
     setFilter('all');
+    setGmailCategory(undefined);
     setSelection(undefined);
     setSelectedId(id ?? undefined);
     setNotificationHeader(inSnapshot ? undefined : header ?? undefined);
@@ -346,7 +352,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   const applyStartupSnapshot = useEffectEvent((updated: ConnectedInbox) => {
     older.reset(inboxFolder.id);
     replaceInbox(updated);
-    if (isInbox) setSelection((current) => current && new Set(
+    if (isInbox && !category) setSelection((current) => current && new Set(
       updated.headers.map(({ key }) => connectedMessageId(key)).filter((id) => current.has(id)),
     ));
   });
@@ -357,10 +363,14 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
       || updated.headers.some(({ key }, index) => connectedMessageId(key) !== connectedMessageId(inbox.headers[index].key));
     if (changedWindow) {
       older.reset(inboxFolder.id);
-      if (isInbox && !searchText) {
+      if (isInbox && !serverFiltered) {
         const visibleIds = new Set<string>(updated.headers.map(({ key }) => connectedMessageId(key)));
         setSelection((current) => current && new Set([...current].filter((id) => visibleIds.has(id))));
       }
+    }
+    if (category && !scheduledOpen && (changedWindow || updated.headers.some((header, index) =>
+      header.unread !== inbox.headers[index]?.unread || header.starred !== inbox.headers[index]?.starred))) {
+      search.retry();
     }
     replaceInbox(updated);
     setInboxError(undefined);
@@ -395,7 +405,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
   function refresh() {
     if (busy || pendingAction.current) return;
     if (selection) setSelection(new Set());
-    if (searchText) search.retry();
+    if (serverFiltered) search.retry();
     setActionError(undefined);
     if (!foldersLoading) {
       setFolderError(undefined);
@@ -535,7 +545,10 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
         to: forward ? '' : reply?.to.join(', ') ?? '',
         cc: mode === 'replyAll' ? reply?.cc.join(', ') ?? '' : '',
         subject: Array.from(subject).slice(0, 240).join(''),
-        body: `\n\n${signature ? `-- \n${signature}\n\n` : ''}${forward ? original : original.split('\n').map((line) => `> ${line}`).join('\n')}`,
+        ...draftBodyWithSignature(
+          forward ? original : original.split('\n').map((line) => `> ${line}`).join('\n'),
+          signature.value, signature.isHtml,
+        ),
         replyThread: forward ? undefined : reply?.thread ?? undefined,
       },
     });
@@ -598,8 +611,9 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
     }
     composeTrigger.current = trigger;
     setShowFolders(false);
-    if (signature) {
-      setDrafts((current) => current.new ? current : { ...current, new: { ...emptyDraft, body: `\n\n-- \n${signature}` } });
+    if (signature.value) {
+      const draft = { ...emptyDraft, ...draftBodyWithSignature('', signature.value, signature.isHtml) };
+      setDrafts((current) => current.new ? current : { ...current, new: draft });
     }
     setComposer({ id: 'new', mode: 'new' });
   }, [composer, setDrafts, signature]);
@@ -682,6 +696,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
       setSelection(undefined);
       setQuery('');
       setFilter('all');
+      setGmailCategory(undefined);
     }
     setMobilePane('list');
     if (showFolders) closeFolders();
@@ -721,6 +736,15 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
             oldestFirst={oldestFirst} onSort={setOldestFirst}
             onSearch={(value) => { setQuery(value); if (selection) setSelection(new Set()); }}
             onFilter={(value) => { setFilter(value); if (value !== filter && selection) setSelection(new Set()); }}
+            gmailCategories={hasGmailCategories ? { active: category, onChange: (value) => {
+              if (value === category) return;
+              setGmailCategory(value);
+              setSelection(undefined);
+              setSelectedId(undefined);
+              setNotificationHeader(undefined);
+              setActionError(undefined);
+              setMobilePane('list');
+            } } : undefined}
             selection={selection} onSelectionChange={setSelection} onBulkAction={(action) => void handleAction(action, 'list')}
             onToggleFolders={() => setShowFolders(!showFolders)}
             onSelect={(id, trigger) => {
@@ -732,7 +756,7 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
               if (header) void handleAction(action, 'list', header.key);
             }}
             busy={busy || actionBusy} refreshing={isInbox ? startupSyncing || inboxRefreshing : folderRefreshing} onRefresh={refresh}
-            older={searchText ? (search.nextCursor ? {
+            older={serverFiltered ? (search.nextCursor ? {
               cursor: connectedMessageId(search.nextCursor), loading: Boolean(search.loadingMore),
               onLoad: () => { if (!pendingAction.current) void search.loadMore(); },
               error: search.error === undefined ? undefined : imapErrorMessage(search.error, labels.imapErrors),
@@ -741,9 +765,9 @@ function MailboxWorkspace({ ui, themeId, colorScheme, inbox, notification, syncO
               cursor: connectedMessageId(older.cursor), loading: older.loading, onLoad: () => { if (!busy && !pendingAction.current) void older.load(); },
               error: older.error === undefined ? undefined : imapErrorMessage(older.error, labels.imapErrors),
             } : undefined}
-            searchStatus={search.pending ? <p className="mailbox-status" role="status">{labels.searchingMessages}</p> :
-              searchText && search.error !== undefined && !search.headers ? <div className="mailbox-status" role="status">
-                {labels.searchUnavailable} <button type="button" className="text-button" onClick={search.retry}>{labels.retrySearch}</button>
+            searchStatus={search.pending ? <p className="mailbox-status" role="status">{category ? labels.loadingGmailCategory : labels.searchingMessages}</p> :
+              serverFiltered && search.error !== undefined && !search.headers ? <div className="mailbox-status" role="status">
+                {category ? labels.gmailCategoryUnavailable : labels.searchUnavailable} <button type="button" className="text-button" onClick={search.retry}>{labels.retrySearch}</button>
               </div> : undefined}
             status={busy ? <p className="mailbox-status" role="status">{labels.connectedInbox.refreshing}</p> :
               failure !== undefined ? <p className="account-setup-error" role="alert">{imapErrorMessage(failure, labels.imapErrors)}</p> :

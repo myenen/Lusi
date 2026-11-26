@@ -34,7 +34,7 @@ Preview installers ship with SHA-256 checksums. macOS builds are ad hoc signed w
 - Send through SMTP with Cc, Bcc, and up to 5 MiB of attachments.
 - Reply, reply all, and forward from the reader. Forwarding includes the original text.
 - Open **Conversation** in the reader to view related messages in date order across the current folder, Inbox, Sent, Archive, and All Mail when available. Expand an entry to read or reply to it. The conversation uses email threading headers and needs a server connection.
-- Type two or more characters in To, Cc, or Bcc to find addresses from locally observed senders and previously sent visible recipients for the active account. In **Settings → Account Center**, save an optional plain-text signature for that account. It is inserted into new drafts, replies, and forwards and can be edited in the composer.
+- Type two or more characters in To, Cc, or Bcc to find addresses from locally observed senders and previously sent visible recipients for the active account. In **Settings → Account signature**, save an optional plain-text or basic HTML signature for that account. You can embed a PNG, JPEG, or GIF up to 256 KiB per file. It is inserted into new drafts, replies, and forwards and can be edited in the composer.
 - The desktop build remembers the theme and pane widths locally.
 - Liquid Glass and Flat themes with different shapes, surfaces, density, and motion. Both support light and dark appearance.
 - Open **Settings → Account Center** to add an email account or select a saved account. With multiple accounts, you can also switch using the account card at the bottom of the sidebar. Lusi reopens the last selected account. The sidebar provides quick access to system, light, and dark appearance.
@@ -59,6 +59,8 @@ To send a message later, choose **Send later** in the composer and pick a local 
 Lusi sends a desktop notification for new unread messages in the active account while the app is running. In **Settings → Notifications**, you can turn off alerts or choose to include the sender and subject. A burst is grouped into one alert that opens the newest message. On Windows, notifications from the installed app open the message from the banner or Notification Center.
 
 Closing the window keeps Lusi in the macOS menu bar or the Windows system tray, where it continues checking mail. Click a notification to bring back the window and open the message. The tray also offers inbox, compose, settings, and manual sync shortcuts. Choose **Quit Lusi** to stop background sync. To make closing the window quit Lusi, turn off **Keep checking mail after closing the window** in **Settings → System Settings**.
+
+Gmail inboxes offer **All**, **Primary**, **Promotions**, **Social**, **Updates**, and **Forums**. The category views use Gmail’s server-side classification with the same search, unread filter, sort order, pagination, and message actions. Loading a category requires a connection to Gmail.
 
 Use **Select messages** next to Refresh to pick individual messages or select all visible results. Use the arrow keys to move focus between message rows and press Enter to open the focused message. Hold Shift with an arrow key or click to select a range. Reverse direction with the keyboard to shrink the range. Use Command-click on macOS or Ctrl-click on Windows to toggle individual messages. The bulk toolbar can mark them as read or unread, archive them, or move them to Trash where the server supports it. In Trash, it can restore them to the Inbox. Changing the search or filter clears the selection.
 

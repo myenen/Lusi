@@ -133,6 +133,7 @@ describe('account setup', () => {
     fireEvent.keyDown(window, { key: 'n', metaKey: true });
     expect(screen.queryByRole('dialog')).toBeNull();
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'Account Center' }));
     expect(settings.getByText(inbox.email)).toBeTruthy();
     expect(settings.queryByText('Work demo')).toBeNull();
     fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
@@ -186,6 +187,7 @@ describe('account setup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
     await screen.findByRole('heading', { name: 'Inbox' });
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'Account Center' }));
     fireEvent.click(settings.getByRole('button', { name: 'Reconnect with Google' }));
     expect(await settings.findByText('Gmail is connected again.')).toBeTruthy();
     expect(signIns).toBe(3);
@@ -353,7 +355,9 @@ describe('connected mailbox', () => {
     const invoke = mockMailbox();
     render(<App />);
     await screen.findByRole('button', { name: /Inbox message/ });
-    const closePreference = within(openSettings()).getByRole<HTMLInputElement>('checkbox', {
+    const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'System Settings' }));
+    const closePreference = settings.getByRole<HTMLInputElement>('checkbox', {
       name: 'Keep checking mail after closing the window',
     });
     expect(closePreference.checked).toBe(true);
@@ -414,6 +418,7 @@ describe('connected mailbox', () => {
     render(<App />);
     await screen.findByRole('button', { name: /Inbox message/ });
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'Notifications' }));
     const enabled = settings.getByRole<HTMLInputElement>('checkbox', { name: 'Notify me about new mail' });
     const details = settings.getByRole<HTMLInputElement>('checkbox', { name: 'Show sender and subject in notifications' });
     expect(enabled.checked).toBe(true);
@@ -456,6 +461,57 @@ describe('connected mailbox', () => {
     fireEvent.change(await screen.findByRole('searchbox'), { target: { value: 'sender@example.test' } });
     expect(await screen.findByText(/Server search is unavailable/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();
+  });
+
+  it('uses Gmail category filters for inbox search, unread filtering and pagination only', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    const promotion = { ...fixtureHeader, key: { ...fixtureKey, uid: 41 }, subject: 'November offers', unread: true };
+    const olderPromotion = { ...promotion, key: { ...fixtureKey, uid: 38 }, subject: 'Earlier offer' };
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox' || command === 'refresh_connected_inbox') {
+        return { accountId: 1, email: 'mail@gmail.com', canSend: true, oauthProvider: 'gmail', headers: [fixtureHeader] };
+      }
+      if (command === 'search_connected_messages') {
+        if (args.request?.category === 'forums') throw 'network';
+        return args.request?.cursor ? { headers: [olderPromotion], nextCursor: null }
+          : { headers: [promotion], nextCursor: promotion.key };
+      }
+      return fallback(command, args);
+    });
+    render(<App />);
+    const filterBar = await screen.findByRole('group', { name: 'Gmail categories' });
+    const categories = within(filterBar);
+    expect(screen.getByRole('searchbox').compareDocumentPosition(filterBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(categories.getAllByRole('button').map((button) => button.textContent?.trim())).toEqual([
+      'All', 'Unread', 'Primary', 'Promotions', 'Social', 'Updates', 'Forums',
+    ]);
+    expect(categories.getByRole('button', { name: 'All', pressed: true })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();
+    fireEvent.click(categories.getByRole('button', { name: 'Promotions' }));
+    expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
+    await screen.findByRole('button', { name: /November offers/ });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more results' }));
+    await screen.findByRole('button', { name: /Earlier offer/ });
+    expect(invoke).toHaveBeenCalledWith('search_connected_messages', {
+      accountId: 1, folder: 'INBOX', request: { category: 'promotions', query: '', oldestFirst: false, unreadOnly: false, cursor: promotion.key },
+    }, undefined);
+    fireEvent.click(categories.getByRole('button', { name: 'Unread' }));
+    expect(categories.getByRole('button', { name: 'Unread', pressed: true })).toBeTruthy();
+    expect(categories.getByRole('button', { name: 'Promotions', pressed: true })).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'November' } });
+    await screen.findByRole('button', { name: /November offers/ });
+    expect(invoke).toHaveBeenCalledWith('search_connected_messages', {
+      accountId: 1, folder: 'INBOX', request: { category: 'promotions', query: 'November', oldestFirst: false, unreadOnly: true },
+    }, undefined);
+    fireEvent.click(categories.getByRole('button', { name: 'Forums' }));
+    await screen.findByText(/Could not load this Gmail category/);
+    expect(screen.queryByRole('button', { name: /Inbox message|November offers/ })).toBeNull();
+    fireEvent.click(categories.getByRole('button', { name: 'All' }));
+    expect(categories.getByRole('button', { name: 'All', pressed: true })).toBeTruthy();
+    expect(categories.getByRole('button', { name: 'Unread', pressed: false })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Sent' }));
+    expect(screen.queryByRole('group', { name: 'Gmail categories' })).toBeNull();
   });
 
   it('limits each bulk action request to 50 and retains confirmed updates if the next batch fails', async () => {
@@ -841,7 +897,10 @@ describe('connected mailbox', () => {
     fireEvent.change(draft.getByLabelText('Subject'), { target: { value: 'First account draft' } });
     fireEvent.click(draft.getByRole('button', { name: 'Close composer' }));
 
-    fireEvent.click(within(openSettings()).getByRole('button', { name: 'Add account' }));
+    const accountCenter = within(within(openSettings()).getByRole('region', { name: 'Account Center' }));
+    expect(accountCenter.queryByRole('button', { name: 'Add account' })).toBeNull();
+    fireEvent.click(accountCenter.getByRole('button', { name: 'Account Center' }));
+    fireEvent.click(accountCenter.getByRole('button', { name: 'Add account' }));
     const modal = within(screen.getByRole('dialog', { name: 'Add account' }));
     fireEvent.change(modal.getByLabelText('Email address'), { target: { value: second.email } });
     fireEvent.click(modal.getByRole('button', { name: 'Continue' }));
@@ -857,6 +916,7 @@ describe('connected mailbox', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh messages' }));
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'Account Center' }));
     expect((await settings.findByRole('button', { name: /second@gmail.com/ })).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(settings.getByRole('button', { name: first.email }));
     await screen.findByRole('button', { name: /Inbox message/ });
@@ -1018,12 +1078,13 @@ describe('connected mailbox', () => {
     });
     fireEvent.click(composer.getByRole('button', { name: 'Rich text' }));
     const rich = composer.getByRole('textbox', { name: 'Message body' });
-    expect(rich.innerHTML).toBe('<p><strong>Hello</strong></p>');
+    const sanitized = '<p><strong>Hello</strong></p><img src="https://example.test/image" referrerpolicy="no-referrer">';
+    expect(rich.innerHTML).toBe(sanitized);
     fireEvent.click(composer.getByRole('button', { name: 'Send' }));
     await screen.findByText('Message accepted by the outgoing server.');
     expect(invoke).toHaveBeenCalledWith('send_connected_message', {
       accountId: 1,
-      message: expect.objectContaining({ to: ['recipient@example.test'], html: '<p><strong>Hello</strong></p>' }),
+      message: expect.objectContaining({ to: ['recipient@example.test'], html: sanitized }),
     }, undefined);
   });
 
@@ -1064,6 +1125,7 @@ describe('connected mailbox', () => {
     expect(withImages).toContain('img-src data: https:;');
     expect(withImages).toContain('https://example.test/logo.png');
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'System Settings' }));
     fireEvent.click(settings.getByRole('radio', { name: 'Dark' }));
     fireEvent.click(settings.getByRole('button', { name: 'Close settings' }));
     expect(frame.getAttribute('srcdoc')).toContain('color-scheme:dark;');
@@ -1162,7 +1224,8 @@ describe('connected mailbox', () => {
     render(<App />);
     await screen.findByRole('button', { name: 'Compose' });
     const settings = within(openSettings());
-    fireEvent.change(settings.getByLabelText('Account signature'), { target: { value: 'Office\nSignature' } });
+    fireEvent.click(settings.getByRole('button', { name: 'Account signature' }));
+    fireEvent.change(settings.getByRole('textbox', { name: 'Account signature' }), { target: { value: 'Office\nSignature' } });
     fireEvent.click(settings.getByRole('button', { name: 'Save signature' }));
     await settings.findByText('Signature saved.');
     expect(invoke).toHaveBeenCalledWith('save_account_signature', { accountId: 1, signature: 'Office\nSignature' }, undefined);
@@ -1179,6 +1242,57 @@ describe('connected mailbox', () => {
     expect(recipient.value).toBe('first@example.test, deniz@example.test, ');
     expect(composer.queryByRole('listbox')).toBeNull();
     expect(invoke.mock.calls.some(([command]) => command === 'send_connected_message')).toBe(false);
+  });
+
+  it('saves a basic HTML signature with a chosen image and includes it in the composed HTML', async () => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    let signature = '';
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'save_account_signature') return signature;
+      return fallback(command, args);
+    });
+    render(<App />);
+    await screen.findByRole('button', { name: 'Compose' });
+    const dialog = openSettings();
+    const drawer = within(dialog);
+    const signatureSection = drawer.getByRole('region', { name: 'Account signature' });
+    expect(drawer.getByRole('region', { name: 'Account Center' }).nextElementSibling).toBe(signatureSection);
+    expect(signatureSection.nextElementSibling).toBe(drawer.getByRole('region', { name: 'System Settings' }));
+    const settings = within(signatureSection);
+    const signatureToggle = settings.getByRole('button', { name: 'Account signature', expanded: false });
+    for (const name of ['Account Center', 'System Settings', 'Notifications']) {
+      expect(drawer.getByRole('button', { name, expanded: false })).toBeTruthy();
+    }
+    expect(settings.queryByRole('textbox')).toBeNull();
+    fireEvent.click(signatureToggle);
+    expect(signatureToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(drawer.getByRole('button', { name: 'System Settings', expanded: false })).toBeTruthy();
+    fireEvent.click(settings.getByRole('button', { name: 'HTML' }));
+    fireEvent.change(settings.getByRole('textbox', { name: 'Account signature' }), { target: {
+      value: '<strong>Office</strong><script>Unsafe</script>',
+    } });
+    const encoded = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const logo = new File([Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))], 'Logo.gif', { type: 'image/gif' });
+    fireEvent.change(dialog.querySelector('input[type="file"]')!, { target: { files: [logo] } });
+    const preview = within(await settings.findByRole('region', { name: 'Signature preview' }));
+    const image = await preview.findByRole('img', { name: 'Logo' });
+    expect(image.getAttribute('src')).toBe(`data:image/gif;base64,${encoded}`);
+    expect(preview.queryByText('Unsafe')).toBeNull();
+    signature = `<strong>Office</strong><img src="data:image/gif;base64,${encoded}" alt="Logo">`;
+    fireEvent.click(settings.getByRole('button', { name: 'Save signature' }));
+    await settings.findByText('Signature saved.');
+    expect(invoke).toHaveBeenCalledWith('save_account_signature', expect.objectContaining({ accountId: 1, isHtml: true }), undefined);
+    fireEvent.click(drawer.getByRole('button', { name: 'Close settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compose' }));
+    const composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    expect(composer.getByRole('img', { name: 'Logo' })).toBeTruthy();
+    fireEvent.change(composer.getByRole('combobox', { name: 'To' }), { target: { value: 'contact@example.test' } });
+    fireEvent.click(composer.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Message accepted by the outgoing server.');
+    expect(invoke).toHaveBeenCalledWith('send_connected_message', expect.objectContaining({
+      message: expect.objectContaining({ html: expect.stringContaining(`data:image/gif;base64,${encoded}`) }),
+    }), undefined);
   });
 
   it('sends from the composer and uses IMAP actions for the selected message', async () => {
@@ -1256,6 +1370,7 @@ describe('connected mailbox', () => {
     fireEvent.click(sidebar.getByRole('radio', { name: 'Dark' }));
     const settingsTrigger = screen.getByRole('button', { name: 'Settings' });
     const settings = within(openSettings());
+    fireEvent.click(settings.getByRole('button', { name: 'System Settings' }));
     expect(settings.getByRole<HTMLInputElement>('radio', { name: 'Dark' }).checked).toBe(true);
     expect(settings.getByText('mail@example.test')).toBeTruthy();
     fireEvent.click(settings.getByRole('radio', { name: 'Light' }));

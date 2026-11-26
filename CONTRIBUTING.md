@@ -15,3 +15,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 Commit the corresponding lockfile when dependencies change. Use synthetic messages and isolated fixtures in tests. Keep account credentials and personal mail out of the repository. See [AGENTS.md](AGENTS.md) for the product roadmap and project conventions.
+
+Use the shared `SettingsSection` component for each new section in the Settings drawer. Sections start collapsed. Their headings control visibility and keep controls mounted while collapsed.

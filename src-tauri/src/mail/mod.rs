@@ -121,6 +121,7 @@ pub struct Inbox {
     account_id: AccountId,
     email: String,
     signature: String,
+    signature_is_html: bool,
     headers: Vec<MailHeader>,
     can_send: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -466,18 +467,28 @@ pub async fn save_account_signature(
     app: AppHandle,
     account_id: AccountId,
     signature: String,
+    is_html: Option<bool>,
 ) -> Result<String, MailError> {
+    let is_html = is_html.unwrap_or_default();
     let normalized = signature.replace("\r\n", "\n");
-    if normalized.encode_utf16().count() > 2000
+    if (is_html && normalized.len() > 750_000)
+        || (!is_html && normalized.encode_utf16().count() > 2000)
         || normalized
             .chars()
             .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
     {
         return Err(MailError::InvalidMessage);
     }
-    let signature = normalized.trim_end().to_owned();
+    let signature = if is_html {
+        html::sanitize_outgoing_html(normalized.trim_end())
+    } else {
+        normalized.trim_end().to_owned()
+    };
+    if signature.len() > 750_000 {
+        return Err(MailError::InvalidMessage);
+    }
     database(&app, move |db, _| {
-        storage::save_signature(db, account_id, &signature)?;
+        storage::save_signature(db, account_id, &signature, is_html)?;
         Ok(signature)
     })
     .await
@@ -537,7 +548,15 @@ pub async fn search_connected_messages(
 ) -> Result<SearchPage, MailError> {
     validate_folder(&folder)?;
     request.validate()?;
+    if request.category.is_some() && !folder.eq_ignore_ascii_case("INBOX") {
+        return Err(MailError::InvalidSettings);
+    }
     let page = foreground_imap(&app, account_id, None, async |connection| {
+        if request.category.is_some()
+            && !address_domain(&connection.email).is_ok_and(discovery::is_gmail_domain)
+        {
+            return Err(MailError::InvalidSettings);
+        }
         imap::search_messages(connection, &folder, &request).await
     })
     .await?;

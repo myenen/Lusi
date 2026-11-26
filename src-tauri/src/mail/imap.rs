@@ -320,6 +320,19 @@ async fn search_uids<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>
     last: u32,
 ) -> Option<HashSet<u32>> {
     let qualifier = if request.unread_only { "UNSEEN " } else { "" };
+    let category = request
+        .category
+        .map(|category| format!("X-GM-RAW \"in:inbox category:{}\" ", category.name()))
+        .unwrap_or_default();
+    if request.query.is_empty() {
+        return session
+            .uid_search(format!(
+                "UID {first}:{last} {qualifier}{}",
+                category.trim_end()
+            ))
+            .await
+            .ok();
+    }
     let bytes = request.query.len();
     let charset = if request.query.is_ascii() {
         ""
@@ -329,7 +342,7 @@ async fn search_uids<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>
     // Synchronizing literals preserve Unicode and keep user text out of the IMAP grammar.
     let tag = session
         .run_command(format!(
-            "UID SEARCH {charset}UID {first}:{last} {qualifier}OR FROM {{{bytes}}}"
+            "UID SEARCH {charset}UID {first}:{last} {qualifier}{category}OR FROM {{{bytes}}}"
         ))
         .await
         .ok()?;
@@ -1623,6 +1636,7 @@ mod tests {
                     .unwrap();
                 let mut request = SearchRequest {
                     query: "İş?".into(),
+                    category: None,
                     unread_only: true,
                     oldest_first: false,
                     cursor: None,
@@ -1645,6 +1659,34 @@ mod tests {
             .await
             .unwrap();
         });
+    }
+
+    #[tokio::test]
+    async fn filters_paginated_inbox_headers_by_gmail_category_without_a_text_query() {
+        timeout(Duration::from_secs(5), async {
+            let (client, server) = duplex(8192);
+            let fixture = tokio::spawn(async move {
+                let mut server = BufReader::new(server);
+                server.get_mut().write_all(b"* OK ready\r\n").await.unwrap();
+                exchange(&mut server, r#"LOGIN "mail@gmail.com" "fixture-only""#, "").await;
+                exchange(&mut server, r#"EXAMINE "INBOX""#, "* 150 EXISTS\r\n* OK [UIDVALIDITY 20] stable\r\n").await;
+                exchange(&mut server, r#"UID SEARCH UID 1:79 UNSEEN X-GM-RAW "in:inbox category:promotions""#, "* SEARCH 79 62 19\r\n").await;
+                exchange(&mut server, &format!("UID FETCH 79,62,19 {HEADER_QUERY}"), "* 2 FETCH (UID 62 FLAGS ())\r\n* 3 FETCH (UID 79 FLAGS ())\r\n* 1 FETCH (UID 19 FLAGS ())\r\n").await;
+            });
+            let mut session = Client::new(client).login("mail@gmail.com", "fixture-only").await.unwrap();
+            let mut request = SearchRequest {
+                query: String::new(),
+                category: Some(crate::mail::search::GmailCategory::Promotions),
+                unread_only: true,
+                oldest_first: false,
+                cursor: Some(MessageKey { uid_validity: 20, uid: 80 }),
+            };
+            request.validate().unwrap();
+            let page = fetch_search_page(&mut session, "INBOX", &request).await.unwrap();
+            assert_eq!(page.headers.iter().map(|header| header.key.uid).collect::<Vec<_>>(), [79, 62, 19]);
+            assert!(page.next_cursor.is_none());
+            fixture.await.unwrap();
+        }).await.unwrap();
     }
 
     #[test]

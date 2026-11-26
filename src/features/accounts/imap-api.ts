@@ -40,7 +40,11 @@ export interface OlderMessages {
   nextBefore: MessageKey | null;
 }
 
+export const gmailCategories = ['primary', 'promotions', 'social', 'updates', 'forums'] as const;
+export type GmailCategory = typeof gmailCategories[number];
+
 export interface MessageSearchRequest {
+  category?: GmailCategory;
   query: string;
   unreadOnly: boolean;
   oldestFirst: boolean;
@@ -58,6 +62,7 @@ export interface ConnectedInbox {
   headers: ImapHeader[];
   canSend: boolean;
   signature?: string;
+  signatureIsHtml?: boolean;
   oauthProvider?: 'gmail';
 }
 
@@ -181,8 +186,8 @@ export const readConversation = (accountId: number, folder: string, key: Message
   invoke<Conversation>('read_conversation', { accountId, folder, key });
 export const suggestRecipients = (accountId: number, query: string) =>
   invoke<RecipientSuggestion[]>('suggest_recipients', { accountId, query });
-export const saveAccountSignature = (accountId: number, signature: string) =>
-  invoke<string>('save_account_signature', { accountId, signature });
+export const saveAccountSignature = (accountId: number, signature: string, isHtml: boolean) =>
+  invoke<string>('save_account_signature', { accountId, signature, ...(isHtml && { isHtml }) });
 export const downloadConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>
   invoke<AttachmentDownloadResult>('download_connected_attachment', { accountId, folder, key, part });
 export const openConnectedAttachment = (accountId: number, folder: string, key: MessageKey, part: number[]) =>

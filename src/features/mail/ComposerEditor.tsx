@@ -1,9 +1,9 @@
-import DOMPurify from 'dompurify';
 import { AlignCenter, AlignLeft, AlignRight, Bold, CaseSensitive, Italic, Link2, List, ListOrdered,
   Palette, Redo2, Strikethrough, Type, Underline, Undo2, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from 'react';
 import { useLabels } from '../../app/i18n';
 import { SelectBox } from '../../components/ui/SelectBox';
+import { markupFromText, safeMarkup } from './compose-html';
 
 export interface DraftEditor {
   html: string;
@@ -25,41 +25,6 @@ const formats = [
 const typefaces = { sans: 'Arial', serif: 'Georgia', mono: 'Courier New' };
 const sizes = { small: '2', normal: '3', large: '5' };
 const colors = { standard: '#191c25', blue: '#3452ba', green: '#177752', red: '#b43150' };
-const supportedStyles = ['color', 'font-family', 'font-size', 'font-style', 'font-weight', 'text-align', 'text-decoration'];
-
-function safeMarkup(html: string) {
-  const markup = DOMPurify.sanitize(html, {
-    RETURN_DOM_FRAGMENT: true,
-    ALLOWED_TAGS: ['a', 'b', 'blockquote', 'br', 'code', 'del', 'div', 'em', 'font', 'h1', 'h2', 'h3', 'hr',
-      'i', 'li', 'ol', 'p', 'pre', 's', 'span', 'strike', 'strong', 'sub', 'sup', 'u', 'ul'],
-    ALLOWED_ATTR: ['href', 'style', 'align', 'color', 'face', 'size'],
-    ALLOWED_URI_REGEXP: /^(?:https?:\/\/|mailto:)/i,
-    ALLOW_ARIA_ATTR: false,
-    ALLOW_DATA_ATTR: false,
-  });
-  for (const element of markup.querySelectorAll<HTMLElement>('[style]')) {
-    const values = supportedStyles.map((property) => [property, element.style.getPropertyValue(property)] as const);
-    element.removeAttribute('style');
-    for (const [property, value] of values) {
-      if (value) element.style.setProperty(property, value);
-    }
-  }
-  const container = document.createElement('div');
-  container.append(markup);
-  return container.innerHTML;
-}
-
-function markupFromText(text: string) {
-  const container = document.createElement('div');
-  for (const line of text.split(/\r?\n/)) {
-    const block = document.createElement('div');
-    if (line) block.textContent = line;
-    else block.append(document.createElement('br'));
-    container.append(block);
-  }
-  return text ? container.innerHTML : '';
-}
-
 export function ComposerEditor({ body, editor, disabled, showFormatting, onChange }: {
   body: string;
   editor?: DraftEditor;

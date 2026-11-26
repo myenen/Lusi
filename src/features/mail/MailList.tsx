@@ -5,7 +5,7 @@ import { Checkbox } from '../../components/ui/Checkbox';
 import { IconButton, SegmentedFilter, Toolbar, type Filter } from '../../components/ui/Controls';
 import { ScrollArea } from '../../components/ui/ScrollArea';
 import { SelectBox } from '../../components/ui/SelectBox';
-import type { MessageAction } from '../accounts/imap-api';
+import { gmailCategories as gmailCategoryOrder, type GmailCategory, type MessageAction } from '../accounts/imap-api';
 import { MessageActions, type MessageActionAvailability } from './MessageActions';
 import type { MessageRow } from './connected-mail';
 
@@ -19,7 +19,7 @@ interface SelectionRange {
 export function MailList({
   title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen,
   oldestFirst, onSort, onSearch, onFilter, onSelect, onToggleFolders, divider, busy, refreshing, onRefresh, status,
-  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older, searchStatus,
+  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older, searchStatus, gmailCategories,
 }: MessageActionAvailability & {
   title: string;
   messages: MessageRow[];
@@ -45,9 +45,11 @@ export function MailList({
   onRefresh: () => void;
   status?: ReactNode;
   searchStatus?: ReactNode;
+  gmailCategories?: { active?: GmailCategory; onChange: (category?: GmailCategory) => void };
   older?: { cursor: string; loading: boolean; error?: string; onLoad: () => void; searchResults?: boolean };
 }) {
   const labels = useLabels();
+  const activeCategory = gmailCategories?.active;
   const selectionButton = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const selectionRange = useRef<SelectionRange | undefined>(undefined);
@@ -79,7 +81,7 @@ export function MailList({
   useLayoutEffect(() => {
     scrollAnchor.current = undefined;
     if (list.current) list.current.scrollTop = 0;
-  }, [oldestFirst, search]);
+  }, [oldestFirst, search, activeCategory]);
 
   useLayoutEffect(() => {
     const anchor = scrollAnchor.current;
@@ -181,7 +183,11 @@ export function MailList({
   const emptyList = !busy && !status && !searchStatus && !older?.searchResults && <li className="list-empty">
     <Inbox size={26} aria-hidden="true" />
     <p role="status">{labels.noMessages}</p>
-    {(search || filter !== 'all') && <button type="button" className="text-button" onClick={() => { onSearch(''); onFilter('all'); }}>{labels.clearFilters}</button>}
+    {(search || filter !== 'all' || activeCategory) && <button type="button" className="text-button" onClick={() => {
+      onSearch('');
+      onFilter('all');
+      gmailCategories?.onChange(undefined);
+    }}>{labels.clearFilters}</button>}
   </li>;
 
   return (
@@ -206,7 +212,19 @@ export function MailList({
           <Search size={17} aria-hidden="true" />
           <input ref={searchRef} type="search" value={search} maxLength={256} onChange={(event) => onSearch(event.target.value)} placeholder={labels.searchPlaceholder} aria-label={labels.searchMessages} />
         </label>
-        <SegmentedFilter value={filter} onChange={onFilter} />
+        {gmailCategories ? <div className="segmented-filter segmented-filter-scroll" role="group" aria-label={labels.gmailCategoryGroup}>
+          <button type="button" aria-pressed={filter === 'all' && !activeCategory} onClick={() => {
+            onFilter('all');
+            gmailCategories.onChange(undefined);
+          }}>{labels.filters.all}</button>
+          <button type="button" aria-pressed={filter === 'unread'} onClick={() => onFilter(filter === 'unread' ? 'all' : 'unread')}>
+            {labels.filters.unread}
+          </button>
+          {gmailCategoryOrder.map((category) => <button key={category} type="button"
+            aria-pressed={category === activeCategory} onClick={() => gmailCategories.onChange(category === activeCategory ? undefined : category)}>
+            {labels.gmailCategories[category]}
+          </button>)}
+        </div> : <SegmentedFilter value={filter} onChange={onFilter} />}
         <div className="list-options">
           <SelectBox className="list-sort" label={labels.sortMessages} value={oldestFirst ? 'oldest' : 'newest'}
             options={[{ value: 'newest', label: labels.newestFirst }, { value: 'oldest', label: labels.oldestFirst }]}
