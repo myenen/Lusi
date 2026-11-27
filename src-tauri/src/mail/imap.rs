@@ -1,4 +1,4 @@
-use super::imap_session::ImapConnection;
+use super::imap_session::{Connection as MailConnection, ImapConnection};
 use super::{
     attachments,
     search::{SearchPage, SearchRequest},
@@ -30,6 +30,12 @@ const HEADER_QUERY: &str = "(UID FLAGS BODYSTRUCTURE BODY.PEEK[HEADER]<0.16384>)
 const BODY_QUERY: &str = "(UID FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[]<0.1048577>)";
 const BODY_LIMIT: usize = 1_048_576;
 pub(super) const WINDOW_SIZE: u32 = 50;
+
+pub(super) struct ActionFolders {
+    fetched_at: Instant,
+    supports_move: bool,
+    folders: Vec<MailFolder>,
+}
 
 pub async fn inbox(
     account: &Account,
@@ -530,10 +536,10 @@ pub(super) async fn apply_action(
     key: MessageKey,
     action: MessageAction,
     deadline: Option<Instant>,
-) -> Result<Option<u32>, MailError> {
+) -> Result<(), MailError> {
     timeout_at(
         deadline.unwrap_or_else(|| Instant::now() + REQUEST_TIMEOUT),
-        apply_message_action(&mut connection.session, folder, key, action),
+        apply_message_action(connection, folder, key, action),
     )
     .await
     .map_err(|_| {
@@ -542,22 +548,24 @@ pub(super) async fn apply_action(
         } else {
             MailError::ActionFailed
         }
-    })??;
-    Ok(if action.affects_unread_count() {
-        connection_unread(connection, folder).await
-    } else {
-        None
-    })
+    })?
 }
 
 async fn apply_message_action<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
-    session: &mut Session<T>,
+    connection: &mut MailConnection<T>,
     folder: &str,
     key: MessageKey,
     action: MessageAction,
 ) -> Result<(), MailError> {
-    let destination = action_destination(session, folder, action).await?;
-    change_message(session, folder, key, action, destination.as_deref()).await
+    let destination = action_destination(connection, folder, action).await?;
+    change_message(
+        &mut connection.session,
+        folder,
+        key,
+        action,
+        destination.as_deref(),
+    )
+    .await
 }
 
 pub(super) async fn apply_batch(
@@ -565,27 +573,26 @@ pub(super) async fn apply_batch(
     folder: &str,
     keys: &[MessageKey],
     action: MessageAction,
-) -> Result<(BatchActionResult, Option<u32>), MailError> {
+) -> Result<BatchActionResult, MailError> {
     let first = keys.first().ok_or(MailError::InvalidSettings)?;
     let deadline = Instant::now() + REQUEST_TIMEOUT * 2;
-    let session = &mut connection.session;
     let destination = timeout_at(deadline, async {
-        let destination = action_destination(session, folder, action).await?;
-        select_action_folder(session, folder, first.uid_validity).await?;
+        let destination = action_destination(connection, folder, action).await?;
+        select_action_folder(&mut connection.session, folder, first.uid_validity).await?;
         Ok::<_, MailError>(destination)
     })
     .await
     .map_err(|_| MailError::ActionFailed)??;
-    let result =
-        change_selected_batch(session, keys, action, destination.as_deref(), deadline).await;
+    let result = change_selected_batch(
+        &mut connection.session,
+        keys,
+        action,
+        destination.as_deref(),
+        deadline,
+    )
+    .await;
     connection.reusable = result.error.is_none();
-    let unread =
-        if connection.reusable && !result.updated.is_empty() && action.affects_unread_count() {
-            connection_unread(connection, folder).await
-        } else {
-            None
-        };
-    Ok((result, unread))
+    Ok(result)
 }
 
 async fn change_selected_batch<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
@@ -618,7 +625,7 @@ async fn change_selected_batch<T: AsyncRead + AsyncWrite + Unpin + Send + std::f
 }
 
 async fn action_destination<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
-    session: &mut Session<T>,
+    connection: &mut MailConnection<T>,
     folder: &str,
     action: MessageAction,
 ) -> Result<Option<String>, MailError> {
@@ -629,14 +636,25 @@ async fn action_destination<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt:
         _ => None,
     };
     if let Some(kind) = destination {
-        let capabilities = session
-            .capabilities()
-            .await
-            .map_err(|_| MailError::ActionFailed)?;
-        if !advertises(&capabilities, "MOVE") && !advertises(&capabilities, "IMAP4rev2") {
+        if connection
+            .action_folders
+            .as_ref()
+            .is_none_or(|cached| cached.fetched_at.elapsed() >= Duration::from_secs(120))
+        {
+            connection.action_folders = Some(
+                discover_action_folders(&mut connection.session)
+                    .await
+                    .map_err(|_| MailError::ActionFailed)?,
+            );
+        }
+        let cached = connection
+            .action_folders
+            .as_ref()
+            .ok_or(MailError::ActionUnavailable)?;
+        if !cached.supports_move {
             return Err(MailError::ActionUnavailable);
         }
-        let folders = discover_folders(session, advertises(&capabilities, "SPECIAL-USE")).await?;
+        let folders = &cached.folders;
         if matches!(action, MessageAction::Restore)
             && !folders
                 .iter()
@@ -645,7 +663,7 @@ async fn action_destination<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt:
             return Err(MailError::ActionUnavailable);
         }
         let target = folders
-            .into_iter()
+            .iter()
             .find(|entry| entry.kind == kind)
             .ok_or(MailError::ActionUnavailable)?;
         if target.id == folder
@@ -653,7 +671,7 @@ async fn action_destination<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt:
         {
             return Err(MailError::ActionUnavailable);
         }
-        Ok(Some(target.id))
+        Ok(Some(target.id.clone()))
     } else {
         Ok(None)
     }
@@ -813,17 +831,31 @@ async fn request_start_tls<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::
     Ok(client.into_inner())
 }
 
-pub(super) async fn folders(connection: &mut ImapConnection) -> Result<Vec<MailFolder>, MailError> {
-    timeout(REQUEST_TIMEOUT, async {
-        let session = &mut connection.session;
-        let capabilities = session
-            .capabilities()
-            .await
-            .map_err(|_| MailError::Folders)?;
-        discover_folders(session, advertises(&capabilities, "SPECIAL-USE")).await
+async fn discover_action_folders<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug>(
+    session: &mut Session<T>,
+) -> Result<ActionFolders, MailError> {
+    let capabilities = session
+        .capabilities()
+        .await
+        .map_err(|_| MailError::Folders)?;
+    let folders = discover_folders(session, advertises(&capabilities, "SPECIAL-USE")).await?;
+    Ok(ActionFolders {
+        fetched_at: Instant::now(),
+        supports_move: advertises(&capabilities, "MOVE") || advertises(&capabilities, "IMAP4rev2"),
+        folders,
     })
+}
+
+pub(super) async fn folders(connection: &mut ImapConnection) -> Result<Vec<MailFolder>, MailError> {
+    let cache = timeout(
+        REQUEST_TIMEOUT,
+        discover_action_folders(&mut connection.session),
+    )
     .await
-    .map_err(|_| MailError::Timeout)?
+    .map_err(|_| MailError::Timeout)??;
+    let folders = cache.folders.clone();
+    connection.action_folders = Some(cache);
+    Ok(folders)
 }
 
 pub(super) async fn save_sent_copy(
@@ -1959,23 +1991,25 @@ mod tests {
                         (17, r#"UID MOVE 17 "Folders/Deleted items""#),
                         (18, r#"UID MOVE 18 "Folders/Records""#),
                     ] {
-                        exchange(
-                            &mut server,
-                            "CAPABILITY",
-                            "* CAPABILITY IMAP4rev1 MOVE SPECIAL-USE\r\n",
-                        )
-                        .await;
-                        exchange(
-                            &mut server,
-                            r#"LIST "" "*" RETURN (SPECIAL-USE)"#,
-                            concat!(
-                                r#"* LIST (\Trash) "/" "Folders/Deleted items""#,
-                                "\r\n",
-                                r#"* LIST (\Archive) "/" "Folders/Records""#,
-                                "\r\n",
-                            ),
-                        )
-                        .await;
+                        if uid == 17 {
+                            exchange(
+                                &mut server,
+                                "CAPABILITY",
+                                "* CAPABILITY IMAP4rev1 MOVE SPECIAL-USE\r\n",
+                            )
+                            .await;
+                            exchange(
+                                &mut server,
+                                r#"LIST "" "*" RETURN (SPECIAL-USE)"#,
+                                concat!(
+                                    r#"* LIST (\Trash) "/" "Folders/Deleted items""#,
+                                    "\r\n",
+                                    r#"* LIST (\Archive) "/" "Folders/Records""#,
+                                    "\r\n",
+                                ),
+                            )
+                            .await;
+                        }
                         exchange(&mut server, r#"SELECT "INBOX""#, selected).await;
                         exchange(
                             &mut server,
@@ -1986,12 +2020,18 @@ mod tests {
                         exchange(&mut server, expected_move, "* 1 EXPUNGE\r\n").await;
                     }
                 });
-                let mut session = Client::new(client)
+                let session = Client::new(client)
                     .login("mail@example.test", "fixture-only")
                     .await
                     .unwrap();
+                let mut connection = MailConnection {
+                    session,
+                    email: "mail@example.test".into(),
+                    reusable: true,
+                    action_folders: None,
+                };
                 apply_message_action(
-                    &mut session,
+                    &mut connection,
                     "INBOX",
                     MessageKey {
                         uid_validity: 20,
@@ -2002,7 +2042,7 @@ mod tests {
                 .await
                 .unwrap();
                 apply_message_action(
-                    &mut session,
+                    &mut connection,
                     "INBOX",
                     MessageKey {
                         uid_validity: 20,

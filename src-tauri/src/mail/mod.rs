@@ -202,7 +202,10 @@ pub struct MailFolder {
 }
 
 #[derive(Default)]
-pub struct MailOperations(Mutex<()>);
+pub struct MailOperations {
+    mailbox: Mutex<()>,
+    delivery: Mutex<()>,
+}
 
 enum MailAuth {
     Password(Zeroizing<String>),
@@ -387,7 +390,7 @@ pub async fn connect_imap_account(
     if password.is_empty() || password.len() > 1024 || password.chars().any(char::is_control) {
         return Err(MailError::InvalidSettings);
     }
-    let _operation = operations.0.lock().await;
+    let _operation = operations.mailbox.lock().await;
     let email = account.email.clone();
     if database(&app, move |db, _| storage::find_account(db, &email))
         .await?
@@ -420,7 +423,7 @@ pub async fn connect_gmail_account(
     email: String,
     reconnect_account_id: Option<AccountId>,
 ) -> Result<Inbox, MailError> {
-    let _operation = operations.0.lock().await;
+    let _operation = operations.mailbox.lock().await;
     let requested_email = email.trim().to_owned();
     let existing = database(&app, move |db, _| {
         storage::find_account(db, &requested_email)
@@ -625,7 +628,7 @@ pub async fn read_connected_message(
     if key.uid == 0 || key.uid_validity == 0 {
         return Err(MailError::MessageMissing);
     }
-    let _operation = operations.0.lock().await;
+    let _operation = operations.mailbox.lock().await;
     let is_inbox = folder.eq_ignore_ascii_case("INBOX");
     let cache_folder = folder.clone();
     let cached = database(&app, move |db, _| {
@@ -640,7 +643,6 @@ pub async fn read_connected_message(
             seen: !unread,
             seen_error: None,
         };
-        let mut unread_count = None;
         if unread {
             let deadline = Instant::now() + Duration::from_secs(4);
             let result = foreground_imap(&app, account_id, Some(deadline), async |connection| {
@@ -655,9 +657,9 @@ pub async fn read_connected_message(
             })
             .await;
             match result {
-                Ok(count) => {
+                Ok(()) => {
                     opened.seen = true;
-                    unread_count = count;
+                    app.state::<sync::InboxSync>().request_refresh();
                 }
                 Err(error @ (MailError::MailboxChanged | MailError::MessageMissing)) => {
                     let _ = database(&app, move |db, _| {
@@ -669,7 +671,7 @@ pub async fn read_connected_message(
                 Err(error) => opened.seen_error = Some(error),
             }
         }
-        (opened, unread_count)
+        (opened, None)
     } else {
         let (opened, unread_count) = foreground_imap(&app, account_id, None, async |connection| {
             imap::message(connection, &folder, key).await
@@ -762,7 +764,7 @@ pub async fn send_connected_message(
     account_id: AccountId,
     message: OutgoingMessage,
 ) -> Result<SentCopyStatus, MailError> {
-    let _operation = operations.0.lock().await;
+    let _operation = operations.delivery.lock().await;
     send_from_account(&app, account_id, message).await
 }
 
@@ -824,8 +826,8 @@ pub async fn update_connected_message(
     if key.uid == 0 || key.uid_validity == 0 {
         return Err(MailError::MessageMissing);
     }
-    let _operation = operations.0.lock().await;
-    let unread = foreground_imap(&app, account_id, None, async |connection| {
+    let _operation = operations.mailbox.lock().await;
+    foreground_imap(&app, account_id, None, async |connection| {
         imap::apply_action(connection, &folder, key, action, None).await
     })
     .await
@@ -837,8 +839,8 @@ pub async fn update_connected_message(
         transaction.commit().map_err(|_| MailError::Storage)
     })
     .await;
-    if let Some(unread) = unread {
-        update_unread_badge(&app, Some((account_id, unread))).await;
+    if action.affects_unread_count() {
+        app.state::<sync::InboxSync>().request_refresh();
     }
     Ok(())
 }
@@ -863,18 +865,14 @@ pub async fn update_connected_messages(
     {
         return Err(MailError::InvalidSettings);
     }
-    let _operation = operations.0.lock().await;
-    let (result, unread) = foreground_imap(&app, account_id, None, async |connection| {
+    let _operation = operations.mailbox.lock().await;
+    let result = foreground_imap(&app, account_id, None, async |connection| {
         imap::apply_batch(connection, &folder, &keys, action).await
     })
     .await
     .inspect_err(|error| reconcile_uncertain_action(&app, error))?;
     if let Some(error) = &result.error {
-        if !result.updated.is_empty() && action.affects_unread_count() {
-            app.state::<sync::InboxSync>().request_refresh();
-        } else {
-            reconcile_uncertain_action(&app, error);
-        }
+        reconcile_uncertain_action(&app, error);
     }
     if !result.updated.is_empty() {
         let updated = result.updated.clone();
@@ -888,8 +886,8 @@ pub async fn update_connected_messages(
         })
         .await;
     }
-    if let Some(unread) = unread {
-        update_unread_badge(&app, Some((account_id, unread))).await;
+    if !result.updated.is_empty() && action.affects_unread_count() {
+        app.state::<sync::InboxSync>().request_refresh();
     }
     Ok(result)
 }

@@ -1295,6 +1295,55 @@ describe('connected mailbox', () => {
     }), undefined);
   });
 
+  it.each([undefined, 'gmail'] as const)('applies a pending move immediately and restores it on rejection (%s)', async (oauthProvider) => {
+    const invoke = mockMailbox();
+    const receive = mockMailEvents(invoke);
+    const fallback = invoke.getMockImplementation()!;
+    const inbox = { accountId: 1, email: 'mail@example.test', headers: [fixtureHeader], canSend: true, oauthProvider };
+    let rejectMove: (error: string) => void = () => {};
+    invoke.mockImplementation(async (command, args) => {
+      if (command === 'load_connected_inbox' || command === 'refresh_connected_inbox') return inbox;
+      if (command === 'update_connected_message') return new Promise((_resolve, reject) => { rejectMove = reject; });
+      return fallback(command, args);
+    });
+    render(<App />);
+    const row = await screen.findByRole('button', { name: /Inbox message/ });
+    await screen.findByRole('button', { name: 'Archive' });
+    await screen.findByRole('button', { name: 'Refresh messages', busy: false });
+    fireEvent.click(within(row.closest('li')!).getByRole('button', { name: 'Move to Trash' }));
+    expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
+    expect(screen.getByText('Syncing message changes…')).toBeTruthy();
+    await act(async () => receive('mail:inbox-changed', inbox));
+    expect(screen.queryByRole('button', { name: /Inbox message/ })).toBeNull();
+    await act(async () => rejectMove('actionFailed'));
+    expect(screen.getByRole('button', { name: /Inbox message/ })).toBeTruthy();
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
+  it.each(['smtpUnavailable', 'sendUncertain'] as const)('closes compose during submission and recovers the draft on %s', async (error) => {
+    const invoke = mockMailbox();
+    const fallback = invoke.getMockImplementation()!;
+    let rejectSend: (error: string) => void = () => {};
+    invoke.mockImplementation(async (command, args) => command === 'send_connected_message'
+      ? new Promise((_resolve, reject) => { rejectSend = reject; }) : fallback(command, args));
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Compose' }));
+    let composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    fireEvent.change(composer.getByLabelText('To'), { target: { value: 'recipient@example.test' } });
+    fireEvent.change(composer.getByLabelText('Subject'), { target: { value: 'Keep this draft' } });
+    fireEvent.click(composer.getByRole('button', { name: 'Send' }));
+    expect(screen.queryByRole('dialog', { name: 'New message' })).toBeNull();
+    expect(screen.getByText('Sending…')).toBeTruthy();
+    await vi.waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'send_connected_message')).toBe(true));
+    await act(async () => rejectSend(error));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open draft' }));
+    composer = within(screen.getByRole('dialog', { name: 'New message' }));
+    expect(composer.getByLabelText<HTMLInputElement>('Subject').value).toBe('Keep this draft');
+    expect(composer.getByLabelText<HTMLInputElement>('To').value).toBe('recipient@example.test');
+    fireEvent.change(composer.getByLabelText('Subject'), { target: { value: 'Edited draft' } });
+    expect(composer.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(error === 'sendUncertain');
+  });
+
   it('sends from the composer and uses IMAP actions for the selected message', async () => {
     const invoke = mockMailbox();
     render(<App />);

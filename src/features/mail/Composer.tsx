@@ -38,7 +38,7 @@ export interface ComposerHandle {
   reveal: () => void;
 }
 
-export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDiscard, onSendStart, onSent, onScheduled }: {
+export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDiscard, sendFailure, onSend, onScheduled }: {
   ref?: Ref<ComposerHandle>;
   accountId: number;
   draft: Draft;
@@ -46,8 +46,8 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   onChange: (draft: Draft) => void;
   onClose: () => void;
   onDiscard: () => void;
-  onSendStart: () => void;
-  onSent: (copy: SentCopyStatus) => void;
+  sendFailure?: string;
+  onSend: (submit: () => Promise<SentCopyStatus>) => void;
   onScheduled: () => void;
 }) {
   const labels = useLabels();
@@ -62,7 +62,8 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   const fieldId = useId();
   const [showCopies, setShowCopies] = useState(Boolean(draft.cc || draft.bcc));
   const [sending, setSending] = useState(false);
-  const [failure, setFailure] = useState<string>();
+  const [failure, setFailure] = useState(sendFailure);
+  const uncertain = sendFailure === 'sendUncertain';
   const [layout, setLayout] = useState<'docked' | 'expanded'>('docked');
   const [minimized, setMinimized] = useState(false);
   const [showFormatting, setShowFormatting] = useState(true);
@@ -106,13 +107,13 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
   }
 
   function change<Key extends keyof Draft>(field: Key, value: Draft[Key]) {
-    setFailure(undefined);
+    if (!uncertain) setFailure(undefined);
     onChange({ ...draft, [field]: value });
   }
 
   async function send(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending.current || failure === 'sendUncertain') return;
+    if (pending.current || uncertain) return;
     const to = splitAddresses(draft.to);
     if (!to.length) {
       setFailure('invalidMessage');
@@ -131,24 +132,24 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
       }
       scheduledAt = Math.floor(date.getTime() / 1000);
     }
+    const buildMessage = async () => ({
+      to, cc: splitAddresses(draft.cc), bcc: splitAddresses(draft.bcc),
+      subject: draft.subject, body: draft.body,
+      attachments: await Promise.all(draft.files.map(encodeFile)),
+      ...(draft.editor && { html: draft.editor.html }),
+      ...(draft.replyThread && { replyThread: draft.replyThread }),
+    });
+    if (scheduledAt === undefined) {
+      pending.current = true;
+      onSend(async () => sendConnectedMessage(accountId, await buildMessage()));
+      return;
+    }
     pending.current = true;
     setSending(true);
     setFailure(undefined);
-    if (scheduledAt === undefined) onSendStart();
     try {
-      const attachments = await Promise.all(draft.files.map(encodeFile));
-      const message = {
-        to, cc: splitAddresses(draft.cc), bcc: splitAddresses(draft.bcc),
-        subject: draft.subject, body: draft.body, attachments,
-        ...(draft.editor && { html: draft.editor.html }),
-        ...(draft.replyThread && { replyThread: draft.replyThread }),
-      };
-      if (scheduledAt === undefined) {
-        onSent(await sendConnectedMessage(accountId, message));
-      } else {
-        await scheduleMessage(accountId, scheduledAt, message);
-        onScheduled();
-      }
+      await scheduleMessage(accountId, scheduledAt, await buildMessage());
+      onScheduled();
     } catch (error) {
       setFailure(typeof error === 'string' ? error : 'unknown');
     } finally {
@@ -229,12 +230,12 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
             change('files', files);
           }
         }} />
-        <button className="compose-button" type="submit" disabled={sending || failure === 'sendUncertain'}>
+        <button className="compose-button" type="submit" disabled={sending || uncertain}>
           {scheduling ? <Clock3 size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
           {scheduling ? labels.scheduleSend : labels.send}
         </button>
         <IconButton label={labels.sendLater} icon={Clock3} aria-expanded={scheduling}
-          aria-controls={scheduling ? `${fieldId}-schedule` : undefined} disabled={sending || failure === 'sendUncertain'} onClick={() => {
+          aria-controls={scheduling ? `${fieldId}-schedule` : undefined} disabled={sending || uncertain} onClick={() => {
             change('scheduledFor', scheduling ? undefined : '');
             if (!scheduling) requestAnimationFrame(() => scheduleInput.current?.focus());
           }} />
@@ -242,7 +243,7 @@ export function Composer({ ref, accountId, draft, mode, onChange, onClose, onDis
           disabled={sending} onClick={() => setShowFormatting(!showFormatting)} />
         <IconButton className="composer-attach" label={labels.attachFiles} icon={Paperclip}
           disabled={sending} onClick={() => fileInput.current?.click()} />
-        {sending && <small role="status">{scheduling ? labels.schedulingMessage : labels.sendingMessage}</small>}
+        {sending && <small role="status">{labels.schedulingMessage}</small>}
         {discarding ? <div className="composer-discard-confirmation" role="group" aria-label={labels.discardDraft}>
           <button ref={cancelDiscardButton} type="button" className="text-button" onClick={() => {
             setDiscarding(false);

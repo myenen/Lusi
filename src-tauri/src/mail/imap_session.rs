@@ -1,4 +1,4 @@
-use super::{AccountId, MailError};
+use super::{imap::ActionFolders, AccountId, MailError};
 use async_imap::Session;
 use std::{
     fmt::Debug,
@@ -24,6 +24,7 @@ pub(super) struct Connection<T: AsyncRead + AsyncWrite + Unpin + Debug> {
     pub session: Session<T>,
     pub email: String,
     pub reusable: bool,
+    pub(super) action_folders: Option<ActionFolders>,
 }
 
 struct CachedConnection<T: AsyncRead + AsyncWrite + Unpin + Debug> {
@@ -81,7 +82,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Debug> SessionCache<T> {
                 }
             }
             let (email, session) = connect().await?;
-            Ok((slot, generation, Connection { session, email, reusable: true }))
+            Ok((slot, generation, Connection { session, email, reusable: true, action_folders: None }))
         })
         .await
         .map_err(|_| MailError::Timeout)??;

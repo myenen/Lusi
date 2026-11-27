@@ -19,7 +19,7 @@ interface SelectionRange {
 export function MailList({
   title, messages, selectedId, search, filter, searchRef, folderToggleRef, foldersOpen,
   oldestFirst, onSort, onSearch, onFilter, onSelect, onToggleFolders, divider, busy, refreshing, onRefresh, status,
-  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older, searchStatus, gmailCategories,
+  canArchive, canTrash, inTrash, onAction, selection, onSelectionChange, onBulkAction, older, searchStatus, gmailCategories, pendingIds,
 }: MessageActionAvailability & {
   title: string;
   messages: MessageRow[];
@@ -41,6 +41,7 @@ export function MailList({
   onToggleFolders: () => void;
   divider: ReactNode;
   busy: boolean;
+  pendingIds: ReadonlySet<string>;
   refreshing: boolean;
   onRefresh: () => void;
   status?: ReactNode;
@@ -162,14 +163,15 @@ export function MailList({
   }
 
   const selectedMessages = messages.filter(({ id }) => selection?.has(id));
+  const readyMessages = selectedMessages.filter(({ id }) => !pendingIds.has(id));
   const allSelected = messages.length > 0 && selectedMessages.length === messages.length;
   const bulkActions = [
-    { action: 'read', label: labels.markRead, icon: MailOpen, enabled: selectedMessages.some(({ unread }) => unread) },
-    { action: 'unread', label: labels.markUnread, icon: Mail, enabled: selectedMessages.some(({ unread }) => !unread) },
-    { action: 'archive', label: labels.archiveMessage, icon: Archive, enabled: canArchive && selectedMessages.length > 0 },
+    { action: 'read', label: labels.markRead, icon: MailOpen, enabled: readyMessages.some(({ unread }) => unread) },
+    { action: 'unread', label: labels.markUnread, icon: Mail, enabled: readyMessages.some(({ unread }) => !unread) },
+    { action: 'archive', label: labels.archiveMessage, icon: Archive, enabled: canArchive && readyMessages.length > 0 },
     inTrash
-      ? { action: 'restore' as const, label: labels.restoreMessage, icon: RotateCcw, enabled: selectedMessages.length > 0 }
-      : { action: 'trash' as const, label: labels.moveToTrash, icon: Trash2, enabled: canTrash && selectedMessages.length > 0 },
+      ? { action: 'restore' as const, label: labels.restoreMessage, icon: RotateCcw, enabled: readyMessages.length > 0 }
+      : { action: 'trash' as const, label: labels.moveToTrash, icon: Trash2, enabled: canTrash && readyMessages.length > 0 },
   ] as const;
   const pagination = older && <li ref={loadMarker} className="list-pagination">
     {older.error && <p role="alert">{older.error}</p>}
@@ -294,7 +296,7 @@ export function MailList({
                   <span className="unread-dot" aria-hidden="true" />
                   {content}
                 </button>
-                <MessageActions message={message} className="message-row-actions" actionBusy={busy}
+                <MessageActions message={message} className="message-row-actions" actionBusy={busy || pendingIds.has(message.id)}
                   canArchive={canArchive} canTrash={canTrash} inTrash={inTrash} onAction={(action) => onAction(message.id, action)} />
               </>}
             </li>;

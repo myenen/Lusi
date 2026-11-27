@@ -32,7 +32,7 @@ pub(super) async fn refresh(
     background: bool,
 ) -> Result<Inbox, MailError> {
     let operations = app.state::<MailOperations>();
-    let _operation = operations.0.lock().await;
+    let _operation = operations.mailbox.lock().await;
     if background && !database(app, move |db, _| storage::is_active(db, account_id)).await? {
         return Err(MailError::NoAccount);
     }

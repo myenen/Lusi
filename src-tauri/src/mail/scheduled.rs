@@ -230,7 +230,7 @@ async fn send(app: &AppHandle, job: Job) {
     let result = async {
         let message = serde_json::from_slice(&payload).map_err(|_| MailError::InvalidMessage)?;
         let operations = app.state::<MailOperations>();
-        let _operation = timeout(Duration::from_secs(20), operations.0.lock())
+        let _operation = timeout(Duration::from_secs(20), operations.delivery.lock())
             .await
             .map_err(|_| MailError::SmtpUnavailable)?;
         timeout(SEND_TIMEOUT, send_from_account(app, account_id, message))
